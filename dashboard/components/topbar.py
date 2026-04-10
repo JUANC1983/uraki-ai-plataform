@@ -75,8 +75,11 @@ def render() -> None:
         f'letter-spacing:0.05em;margin-left:6px;">{plan_label}</span>'
     )
 
+    user_name = user.get('name') or user.get('email', '—')
+    tenant_display = tenant_name[:22] + ('…' if len(tenant_name) > 22 else '')
+
     # ── Topbar HTML ──────────────────────────────────────────────────────
-    st.markdown(f"""
+    html = f"""
     <div style="
         display:flex;align-items:center;justify-content:space-between;
         padding:0 1.5rem;height:56px;
@@ -84,7 +87,6 @@ def render() -> None:
         border-bottom:1px solid {c['border_subtle']};
         position:sticky;top:0;z-index:999;
     ">
-        <!-- Left: Logo + wordmark + tenant -->
         <div style="display:flex;align-items:center;gap:10px;min-width:200px;">
             {logo_svg}
             <div>
@@ -97,36 +99,35 @@ def render() -> None:
                 </div>
                 <div style="font-size:10px;color:{c['text_muted']};
                     letter-spacing:0.1em;text-transform:uppercase;">
-                    {tenant_name[:22]}{'…' if len(tenant_name) > 22 else ''}
+                    {tenant_display}
                 </div>
             </div>
         </div>
 
-        <!-- Center: clock slot (filled by JS component below) -->
         <div style="flex:1;display:flex;justify-content:center;"></div>
 
-        <!-- Right: user info -->
         <div style="min-width:340px;display:flex;align-items:center;
             gap:8px;justify-content:flex-end;">
             <span style="font-size:11px;color:{c['text_muted']};">
-                {_ROLE_ICONS.get(role,'👤')}
-                {user.get('name') or user.get('email','—')}
+                {_ROLE_ICONS.get(role, '👤')}
+                {user_name}
                 &nbsp;·&nbsp;
                 <span style="color:{primary_color};font-weight:500;">
                     {role.capitalize()}</span>
             </span>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
     # ── Right-side controls ──────────────────────────────────────────────
     _, col_view, col_tenant, col_logout = st.columns([3.5, 1.1, 1.4, 0.7])
 
     with col_view:
         view_options = {
-            "flow":        "⚡ Flow",
-            "quick":       "🚀 Quick",
-            "executive":   "📊 Gerencial",
+            "flow":          "⚡ Flow",
+            "quick":         "🚀 Quick",
+            "executive":     "📊 Gerencial",
             "observability": "📡 Sistema",
         }
         current_view = sm.get("view_mode", "flow")
@@ -145,7 +146,8 @@ def render() -> None:
 
     with col_tenant:
         tid = get_tenant_id() or "—"
-        st.markdown(f"""
+        tenant_short = tenant_name[:18] + ('…' if len(tenant_name) > 18 else '')
+        html = f"""
         <div style="
             background:{c['bg_elevated']};
             border:1px solid {c['border_subtle']};
@@ -154,9 +156,10 @@ def render() -> None:
             white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
             max-width:160px;
         " title="{tid}">
-            🏢 {tenant_name[:18]}{'…' if len(tenant_name) > 18 else ''}
+            🏢 {tenant_short}
         </div>
-        """, unsafe_allow_html=True)
+        """
+        st.markdown(html, unsafe_allow_html=True)
 
     with col_logout:
         if st.button("↩", key="logout_btn", help="Cerrar sesión"):

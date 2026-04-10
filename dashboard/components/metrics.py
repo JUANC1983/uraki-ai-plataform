@@ -11,15 +11,18 @@ def render(db_metrics: dict) -> None:
     c = COLORS
     resolved = sm.get("resolved_today", 0)
     avg_ms = sm.avg_resolution_ms()
-    pending = db_metrics.get("pending", 0) - resolved  # subtract resolved this session
-    pending = max(pending, 0)
     critical = db_metrics.get("critical", 0)
     escalated = db_metrics.get("escalated", 0)
 
     # ── Momentum strip ─────────────────────────────────────────────────
     momentum_color = c["success"] if resolved >= 3 else c["accent"] if resolved >= 1 else c["text_muted"]
+    avg_display = fmt_duration_ms(avg_ms) if avg_ms else "—"
+    dots = "".join(_dot(i < resolved, momentum_color) for i in range(10))
 
-    st.markdown(f"""
+    icon_bg_momentum = f"rgba({_hex_rgb(momentum_color)},0.12)"
+    icon_border_momentum = f"rgba({_hex_rgb(momentum_color)},0.3)"
+
+    html = f"""
     <div style="
         display:flex;align-items:center;justify-content:space-between;
         padding:0.6rem 1.5rem;
@@ -28,12 +31,11 @@ def render(db_metrics: dict) -> None:
         gap:1rem;
         flex-wrap:wrap;
     ">
-        <!-- Resolved today (momentum) -->
         <div style="display:flex;align-items:center;gap:10px;">
             <div style="
                 width:36px;height:36px;
-                background:{momentum_color.replace('#','') and f'rgba({_hex_rgb(momentum_color)},0.12)'};
-                border:1px solid rgba({_hex_rgb(momentum_color)},0.3);
+                background:{icon_bg_momentum};
+                border:1px solid {icon_border_momentum};
                 border-radius:8px;display:flex;align-items:center;justify-content:center;
                 font-size:16px;
             ">✓</div>
@@ -47,7 +49,6 @@ def render(db_metrics: dict) -> None:
 
         <div style="width:1px;height:32px;background:{c['border_subtle']};"></div>
 
-        <!-- Avg resolution time -->
         <div style="display:flex;align-items:center;gap:10px;">
             <div style="
                 width:36px;height:36px;
@@ -58,7 +59,7 @@ def render(db_metrics: dict) -> None:
             ">⏱</div>
             <div>
                 <div style="font-size:20px;font-weight:700;color:{c['text_primary']};
-                    line-height:1.1;">{fmt_duration_ms(avg_ms) if avg_ms else '—'}</div>
+                    line-height:1.1;">{avg_display}</div>
                 <div style="font-size:10px;color:{c['text_muted']};
                     text-transform:uppercase;letter-spacing:0.08em;">Tiempo promedio</div>
             </div>
@@ -66,7 +67,6 @@ def render(db_metrics: dict) -> None:
 
         <div style="width:1px;height:32px;background:{c['border_subtle']};"></div>
 
-        <!-- Pending -->
         <div style="display:flex;align-items:center;gap:10px;">
             <div style="
                 width:36px;height:36px;
@@ -85,7 +85,6 @@ def render(db_metrics: dict) -> None:
 
         <div style="width:1px;height:32px;background:{c['border_subtle']};"></div>
 
-        <!-- Critical -->
         <div style="display:flex;align-items:center;gap:10px;">
             <div style="
                 width:36px;height:36px;
@@ -104,7 +103,6 @@ def render(db_metrics: dict) -> None:
 
         <div style="width:1px;height:32px;background:{c['border_subtle']};"></div>
 
-        <!-- Escalated -->
         <div style="display:flex;align-items:center;gap:10px;">
             <div style="
                 width:36px;height:36px;
@@ -121,17 +119,17 @@ def render(db_metrics: dict) -> None:
             </div>
         </div>
 
-        <!-- Momentum bar (rightmost) -->
         <div style="
             display:flex;align-items:center;gap:8px;
             margin-left:auto;
         ">
             <span style="font-size:10px;color:{c['text_muted']};
                 text-transform:uppercase;letter-spacing:0.08em;">Sesión</span>
-            {''.join(_dot(i < resolved, momentum_color) for i in range(10))}
+            {dots}
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def _dot(filled: bool, color: str) -> str:
