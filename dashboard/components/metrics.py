@@ -129,8 +129,8 @@ def render(db_metrics: dict) -> None:
         </div>
     </div>
     """
+    with st.container():
     st.markdown(html, unsafe_allow_html=True)
-
 
 def _dot(filled: bool, color: str) -> str:
     bg = color if filled else COLORS["border_default"]
