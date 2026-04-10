@@ -175,15 +175,20 @@ def render_env_banner() -> None:
         "staging":     ("#3B82F6", "rgba(59,130,246,0.10)", "STAGING"),
     }
     color, bg, label = _COLORS.get(_CURRENT_ENV.name, ("#888", "#111", "DESCONOCIDO"))
-    st.markdown(f"""
+    dev_note = (
+        ' &nbsp;·&nbsp; <span style="font-weight:400;">Local Development Mode — Auth bypassed</span>'
+        if _CURRENT_ENV.name == "development" else ""
+    )
+    html = f"""
     <div style="
         background:{bg};border:1px solid {color}55;
         border-radius:6px;padding:6px 16px;margin-bottom:0.75rem;
         display:flex;align-items:center;justify-content:space-between;
     ">
         <span style="font-size:11px;color:{color};font-weight:700;
-            letter-spacing:0.1em;">⚠ ENTORNO: {label}</span>
+            letter-spacing:0.1em;">⚠ ENTORNO: {label}{dev_note}</span>
         <span style="font-size:10px;color:{color}99;">
             Los datos aquí no son de producción real.</span>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(html, unsafe_allow_html=True)

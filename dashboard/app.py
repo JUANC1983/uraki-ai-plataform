@@ -64,8 +64,14 @@ def main() -> None:
     # 2. Inject global CSS design system
     st.markdown(get_css(), unsafe_allow_html=True)
 
-    # 3. Login gate — show login screen if not authenticated
+    # 3. Login gate — bypass in development, enforce in production
     from core.auth import is_authenticated
+    from core.environment import is_development
+
+    if is_development() and not is_authenticated():
+        from core.auth import dev_login
+        dev_login()
+
     if not is_authenticated():
         from components.login import render as render_login
         render_login()

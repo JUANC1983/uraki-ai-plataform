@@ -104,6 +104,25 @@ def login(email: str, password: str) -> tuple[bool, str]:
     return _api_login(email, password)
 
 
+def dev_login() -> None:
+    """
+    Inject a synthetic admin session for local development.
+    Only runs when URAKI_ENV=development. No-op in any other environment.
+    """
+    from core.environment import is_development
+    if not is_development():
+        return
+    st.session_state["auth_token"]    = "DEV_LOCAL_TOKEN"
+    st.session_state["auth_user"]     = {
+        "email":     "dev@local",
+        "role":      "admin",
+        "name":      "Dev Local",
+        "tenant_id": "dev-tenant",
+    }
+    st.session_state["tenant_config"] = {}
+    st.session_state["api_cache"]     = {}
+
+
 def logout() -> None:
     keys = ["auth_token", "auth_user", "tenant_config", "api_cache",
             "_cache_tenant_id", "selected_case_id", "eval_result",
