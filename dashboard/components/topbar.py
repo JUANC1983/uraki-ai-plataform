@@ -159,7 +159,8 @@ def render() -> None:
             🏢 {tenant_short}
         </div>
         """
-        st.markdown(html, unsafe_allow_html=True)
+        with st.container():
+    st.markdown(html, unsafe_allow_html=True)
 
     with col_logout:
         if st.button("↩", key="logout_btn", help="Cerrar sesión"):
