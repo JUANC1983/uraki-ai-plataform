@@ -62,7 +62,7 @@ def main() -> None:
     sm.init()
 
     # 2. Inject global CSS design system
-    st.markdown(get_css(), unsafe_allow_html=True)
+st.markdown(get_css(), unsafe_allow_html=True)
 
     # 3. Login gate — bypass in development, enforce in production
     from core.auth import is_authenticated
