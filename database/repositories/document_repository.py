@@ -1,7 +1,7 @@
 # database/repositories/document_repository.py
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Document, DocumentChunk
@@ -12,7 +12,8 @@ class DocumentRepository(BaseRepository[Document]):
     model = Document
 
     async def create(self, data: dict[str, Any]) -> Document:
-        doc = Document(tenant_id=self.tenant_id, **data)
+        safe_data = {key: value for key, value in data.items() if key != "tenant_id"}
+        doc = Document(tenant_id=self.tenant_id, **safe_data)
         self.session.add(doc)
         await self.session.flush()
         return doc
@@ -33,13 +34,24 @@ class DocumentRepository(BaseRepository[Document]):
         chunks: list[dict[str, Any]],
         embeddings: list[list[float]],
     ) -> list[DocumentChunk]:
-        # Verify document belongs to this tenant before adding chunks
-        doc = await self._get_by_id(document_id)
+        # Serialize retries for one document, then replace its chunks in the
+        # same transaction. A failed replacement rolls back to the prior set.
+        result = await self.session.execute(
+            self._q().where(Document.id == document_id).with_for_update()
+        )
+        doc = result.scalar_one_or_none()
         if not doc:
             from database.repositories.base import TenantIsolationError
             raise TenantIsolationError(
                 f"Document '{document_id}' not found for tenant '{self.tenant_id}'"
             )
+
+        await self.session.execute(
+            delete(DocumentChunk).where(
+                DocumentChunk.document_id == document_id,
+                DocumentChunk.tenant_id == self.tenant_id,
+            )
+        )
 
         created = []
         for i, chunk in enumerate(chunks):

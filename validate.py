@@ -4,8 +4,10 @@ validate.py -- Full system validation (no DB, no network required).
 Run: python validate.py
 """
 import io
+import os
 import sys
 import warnings
+from pathlib import Path
 
 # Force UTF-8 output on Windows so arrow/check chars don't crash cp1252
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -650,11 +652,20 @@ try:
     ok("TenantConfig: partial override", f"tone={config2.tone_settings.tone} llm={config2.modules.llm_classification}")
 
     # Weights normalization
-    raw_unnorm = {"risk_weights": {"overdue_days": 4, "economic_impact": 3, "legal_risk": 2, "recurrence": 1}}
+    raw_unnorm = {
+        "risk_weights": {
+            "overdue_days": 0.4,
+            "economic_impact": 0.3,
+            "legal_risk": 0.2,
+            "recurrence": 0.2,
+        }
+    }
     config3 = engine._parse("tenant-003", raw_unnorm)
     total = sum(config3.risk_weights.as_dict().values())
     assert abs(total - 1.0) < 0.01, f"Weights should sum to 1.0, got {total}"
-    ok("RiskWeights normalization", f"4:3:2:1 → sum={total:.3f}")
+    assert abs(config3.risk_weights.overdue_days - (0.4 / 1.1)) < 0.01
+    assert abs(config3.risk_weights.recurrence - (0.2 / 1.1)) < 0.01
+    ok("RiskWeights normalization", f"0.4+0.3+0.2+0.2 → sum={total:.3f}")
 
     # TenantConfig root is frozen — cannot replace a field
     raised = False
@@ -675,6 +686,29 @@ try:
     assert config.risk_thresholds.resolve_level(50) == "MEDIO"
     assert config.risk_thresholds.resolve_level(85) == "ALTO"
     ok("RiskThresholds.resolve_level()", "15→BAJO, 50→MEDIO, 85→ALTO")
+
+    # The API passes a typed TenantConfig into DecisionAgent.
+    import asyncio as _asyncio
+    from agents.decision_agent import DecisionAgent
+
+    typed_decision = _asyncio.get_event_loop().run_until_complete(
+        DecisionAgent().evaluate(
+            case_id="case-typed-config",
+            tenant_id="tenant-typed-config",
+            case_data={
+                "client_name": "Validation User",
+                "overdue_days": 10,
+                "overdue_amount": 100.0,
+                "monthly_rent": 1000.0,
+            },
+            rules=[],
+            tenant_config=TenantConfig(tenant_id="tenant-typed-config"),
+            llm_connector=None,
+            message_agent=None,
+        )
+    )
+    assert typed_decision.action == "REVISAR_MANUALMENTE"
+    ok("DecisionAgent accepts typed TenantConfig from API dependency")
 
 except Exception as e:
     fail("Config Engine", traceback.format_exc())
@@ -756,13 +790,13 @@ try:
 
     event = DomainEvent(
         event_type=DomainEvent.CASE_CREATED,
-        tenant_id="tenant-001",
+        tenant_id="00000000-0000-0000-0000-000000000001",
         aggregate_type="case",
-        aggregate_id="case-abc",
+        aggregate_id="00000000-0000-0000-0000-000000000002",
         payload={"case_type": "mora", "client_name": "Juan García"},
     )
     assert event.event_type == "CASE_CREATED"
-    assert event.tenant_id == "tenant-001"
+    assert event.tenant_id == "00000000-0000-0000-0000-000000000001"
     assert event.event_id  # UUID generated
     d = event.to_dict()
     assert "event_id" in d and "payload" in d and "occurred_at" in d
@@ -873,8 +907,8 @@ required_files = {
     "automation/task_queue.py": "Async task queue",
     "automation/event_handlers.py": "Domain event handlers",
     "automation/scheduler.py": "Periodic jobs",
-    "dashboard/operational.py": "Operational Streamlit UI",
-    "dashboard/executive.py": "Executive Streamlit UI",
+    "dashboard/app.py": "Operational Streamlit UI",
+    "executive.py": "Executive Streamlit UI",
     "main.py": "FastAPI entry point",
     "requirements.txt": "Dependencies",
     ".env.example": "Config template",
@@ -897,15 +931,42 @@ if missing_files:
 
 # Check for known gaps / TODOs
 gaps = [
-    ("alembic.ini + migrations/", "DB migration files not present — tables auto-created on startup"),
-    ("tests/", "No test directory — validation.py covers smoke tests only"),
     ("api/routes/feedback.py", "Feedback endpoint not implemented (FeedbackRegistry model exists)"),
     ("connectors/email_connector.py", "Email sending is a stub in task_queue.py"),
-    ("Pinecone/pgvector integration", "Vector search uses JSONB cosine — no pgvector extension yet"),
+    ("dedicated vector backend", "Vector search uses JSONB arrays and Python cosine similarity"),
 ]
 
 for gap, detail in gaps:
     warn(f"Known gap: {gap}", detail)
+
+if os.path.isdir("tests") and any(
+    name.startswith("test_") and name.endswith(".py")
+    for _, _, files in os.walk("tests")
+    for name in files
+):
+    ok("Automated test directory", "tests/ contains discoverable test modules")
+else:
+    warn("Known gap: tests/", "No discoverable automated tests")
+
+main_source = Path("main.py").read_text(encoding="utf-8")
+if "app.add_middleware(RateLimitMiddleware)" in main_source:
+    ok("Active rate limiting", "RateLimitMiddleware is mounted in main.py")
+else:
+    warn("Known gap: active rate limiting", "RateLimitMiddleware is not mounted")
+
+auth_source = Path("api/routes/auth.py").read_text(encoding="utf-8")
+if "current_user: CurrentUser" in auth_source and "tenant_id: str" not in auth_source.split(
+    "class UserCreate", 1
+)[1].split("def create_access_token", 1)[0]:
+    ok(
+        "Restricted registration",
+        "Registration requires an authenticated user and does not accept tenant_id",
+    )
+else:
+    warn(
+        "Known gap: restricted registration",
+        "Registration authorization or tenant assignment remains unsafe",
+    )
 
 # ==========================================================================
 # SUMMARY
@@ -919,7 +980,7 @@ print(f"  Failed       : {results['failed']}")
 print(f"  Warnings     : {results['warnings']}")
 
 if results["failed"] == 0:
-    print(f"\n  ✓ ALL CHECKS PASSED — System is valid and ready.\n")
+    print(f"\n  ✓ SCRIPT CHECKS COMPLETED — Review warnings and external-service limits.\n")
     sys.exit(0)
 else:
     print(f"\n  ✗ {results['failed']} CHECK(S) FAILED — Review errors above.\n")

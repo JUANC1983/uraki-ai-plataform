@@ -57,6 +57,8 @@ def render() -> None:
         ">
         """, unsafe_allow_html=True)
 
+        tenant_slug = st.text_input("Tenant", placeholder="mi-organizacion",
+                                    key="login_tenant")
         email    = st.text_input("Correo electrónico", placeholder="operador@uraki.co",
                                  key="login_email")
         password = st.text_input("Contraseña", placeholder="••••••••",
@@ -66,11 +68,11 @@ def render() -> None:
 
         st.markdown('<div class="uraki-btn-primary">', unsafe_allow_html=True)
         if st.button("Iniciar sesión", use_container_width=True, key="login_btn"):
-            if not email or not password:
+            if not tenant_slug or not email or not password:
                 st.error("Completa todos los campos.")
             else:
                 with st.spinner("Autenticando..."):
-                    ok, err = login(email.strip(), password)
+                    ok, err = login(tenant_slug.strip(), email.strip(), password)
                 if ok:
                     st.rerun()
                 else:

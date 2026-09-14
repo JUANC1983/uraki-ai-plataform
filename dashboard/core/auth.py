@@ -27,27 +27,24 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
-    "operador":  {"read", "evaluate"},
+    "operador":  {"read", "evaluate", "override"},
     "legal":     {"read", "evaluate", "escalate"},
-    "gerente":   {"read", "evaluate", "escalate", "override", "download"},
-    "admin":     {"read", "evaluate", "escalate", "override", "download", "manage"},
-    "auditor":   {"read", "download"},
+    "ejecutivo": {"read", "download", "view_executive"},
+    "admin":     {"read", "evaluate", "escalate", "override", "download", "manage", "view_executive"},
 }
 
 ROLE_LABELS: dict[str, str] = {
     "operador":  "Operador",
     "legal":     "Legal",
-    "gerente":   "Gerente",
+    "ejecutivo": "Ejecutivo",
     "admin":     "Admin",
-    "auditor":   "Auditor",
 }
 
 ROLE_ICONS: dict[str, str] = {
     "operador":  "👤",
     "legal":     "⚖",
-    "gerente":   "📊",
+    "ejecutivo": "📊",
     "admin":     "🔧",
-    "auditor":   "🔍",
 }
 
 
@@ -89,7 +86,7 @@ def get_tenant_config() -> dict:
 # Login / logout
 # ---------------------------------------------------------------------------
 
-def login(email: str, password: str) -> tuple[bool, str]:
+def login(tenant_slug: str, email: str, password: str) -> tuple[bool, str]:
     """
     Authenticate against the backend.
     Returns (success, error_message).
@@ -101,26 +98,7 @@ def login(email: str, password: str) -> tuple[bool, str]:
             "El sistema no está conectado a un backend. "
             "Configura URAKI_API_URL y reinicia el servidor."
         )
-    return _api_login(email, password)
-
-
-def dev_login() -> None:
-    """
-    Inject a synthetic admin session for local development.
-    Only runs when URAKI_ENV=development. No-op in any other environment.
-    """
-    from core.environment import is_development
-    if not is_development():
-        return
-    st.session_state["auth_token"]    = "DEV_LOCAL_TOKEN"
-    st.session_state["auth_user"]     = {
-        "email":     "dev@local",
-        "role":      "admin",
-        "name":      "Dev Local",
-        "tenant_id": "dev-tenant",
-    }
-    st.session_state["tenant_config"] = {}
-    st.session_state["api_cache"]     = {}
+    return _api_login(tenant_slug, email, password)
 
 
 def logout() -> None:
@@ -135,10 +113,11 @@ def logout() -> None:
 # Private — real API login
 # ---------------------------------------------------------------------------
 
-def _api_login(email: str, password: str) -> tuple[bool, str]:
+def _api_login(tenant_slug: str, email: str, password: str) -> tuple[bool, str]:
     client = APIClient()
     try:
         resp = client.post_form("/auth/login", {
+            "tenant_slug": tenant_slug,
             "username": email,
             "password": password,
         })

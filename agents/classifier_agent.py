@@ -50,15 +50,23 @@ class ClassifierAgent:
         )
 
         if engine_result.applied_rule and "classification" in engine_result.applied_actions:
-            return {
-                "classification": CaseClassification(
+            try:
+                classification = CaseClassification(
                     engine_result.applied_actions["classification"]
-                ),
-                "source": "rule_engine",
-                "confidence": 1.0,
-                "reasoning": engine_result.explanation,
-                "rule_id": engine_result.applied_rule.id,
-            }
+                )
+            except (TypeError, ValueError):
+                logger.error(
+                    "Ignoring invalid classification action from rule %s",
+                    engine_result.applied_rule.id,
+                )
+            else:
+                return {
+                    "classification": classification,
+                    "source": "rule_engine",
+                    "confidence": 1.0,
+                    "reasoning": engine_result.explanation,
+                    "rule_id": engine_result.applied_rule.id,
+                }
 
         # LLM hint fallback
         if llm_connector:
@@ -67,15 +75,24 @@ class ClassifierAgent:
                     case_description=self._build_description(case_context),
                     available_classifications=[c.value for c in CaseClassification],
                 )
+                if not isinstance(hint, dict):
+                    raise ValueError("LLM classification response must be an object")
+                classification = CaseClassification(hint.get("classification", "OTRO"))
+                confidence = float(hint.get("confidence", 0.5))
+                if not 0 <= confidence <= 1:
+                    raise ValueError("LLM classification confidence must be between 0 and 1")
+                reasoning = hint.get("reasoning", "LLM-based hint")
+                if not isinstance(reasoning, str):
+                    raise ValueError("LLM classification reasoning must be text")
                 return {
-                    "classification": CaseClassification(hint.get("classification", "OTRO")),
+                    "classification": classification,
                     "source": "llm_hint",
-                    "confidence": hint.get("confidence", 0.5),
-                    "reasoning": hint.get("reasoning", "LLM-based hint"),
+                    "confidence": confidence,
+                    "reasoning": reasoning[:1000],
                     "rule_id": None,
                 }
             except Exception as exc:
-                logger.warning("LLM classification failed: %s", exc)
+                logger.warning("LLM classification failed (%s)", type(exc).__name__)
 
         return {
             "classification": CaseClassification.OTRO,

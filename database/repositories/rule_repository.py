@@ -74,8 +74,12 @@ class RuleRepository(BaseRepository[Rule]):
         rows = await self.session.execute(q.order_by(Rule.priority.asc(), Rule.version.asc()))
         return list(rows.scalars().all())
 
-    async def get_version_history(self, parent_rule_id: str) -> list[Rule]:
-        """All versions of a logical rule, ordered oldest→newest."""
+    async def get_version_history(self, rule_id: str) -> list[Rule]:
+        """All versions of a logical rule, accepting a root or child version ID."""
+        anchor = await self._get_by_id(rule_id)
+        if not anchor:
+            return []
+        parent_rule_id = anchor.parent_rule_id or anchor.id
         rows = await self.session.execute(
             self._q()
             .where(
@@ -155,7 +159,6 @@ class RuleRepository(BaseRepository[Rule]):
           3. Create a new row based on the old version (version = current + 1)
         """
         # Find the target version
-        parent_id = rule_id
         history = await self.get_version_history(rule_id)
         if not history:
             raise ValueError(f"No version history found for rule '{rule_id}'")
@@ -167,6 +170,8 @@ class RuleRepository(BaseRepository[Rule]):
                 f"Version {target_version} not found for rule '{rule_id}'. "
                 f"Available: {available}"
             )
+
+        parent_id = target.parent_rule_id or target.id
 
         # Close current active version
         current = next((r for r in history if r.effective_to is None), None)

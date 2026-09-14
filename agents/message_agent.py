@@ -74,7 +74,9 @@ class MessageAgent:
             llm_connector=llm_connector,
             case_data=case_data,
         )
-        return result.text if result else None
+        # Callers of the compact interface cannot inspect warnings. Fail closed
+        # so a factually invalid draft never becomes a suggested message.
+        return result.text if result and result.validation_passed else None
 
     async def draft_structured(
         self,
@@ -100,7 +102,7 @@ class MessageAgent:
         try:
             context = engine.build_context(decision, _case_data, tone_settings)
         except Exception as exc:
-            logger.error("CommunicationEngine.build_context failed: %s", exc)
+            logger.error("Communication context construction failed (%s)", type(exc).__name__)
             return None
 
         # ── 3. Select template ───────────────────────────────────────────
@@ -145,10 +147,10 @@ class MessageAgent:
                     tenant_context=f"Empresa: {context.company_name}" if context.company_name else None,
                 )
             except Exception as exc:
-                logger.error("MessageAgent fallback draft_message failed: %s", exc)
+                logger.error("Fallback message drafting failed (%s)", type(exc).__name__)
                 return None
         except Exception as exc:
-            logger.error("MessageAgent LLM call failed: %s", exc)
+            logger.error("Message drafting failed (%s)", type(exc).__name__)
             return None
 
         if not generated or not generated.strip():
@@ -160,8 +162,8 @@ class MessageAgent:
         validation_passed = len(warnings) == 0
         if warnings:
             logger.warning(
-                "MessageAgent validation warnings for case %s: %s",
-                decision.case_id, warnings,
+                "MessageAgent validation produced %d finding(s) for case %s",
+                len(warnings), decision.case_id,
             )
 
         from core.communication_engine import TONE_LABELS

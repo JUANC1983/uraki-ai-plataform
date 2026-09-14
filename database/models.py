@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -75,7 +76,10 @@ class TenantConfiguration(Base):
 # ---------------------------------------------------------------------------
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("tenant_id", "email"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "email"),
+        UniqueConstraint("tenant_id", "id", name="uq_users_tenant_id"),
+    )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
     tenant_id: Mapped[str] = mapped_column(
@@ -89,7 +93,9 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tenant: Mapped["Tenant"] = relationship(back_populates="users")
-    overrides: Mapped[list["Override"]] = relationship(back_populates="user")
+    overrides: Mapped[list["Override"]] = relationship(
+        back_populates="user", foreign_keys="Override.user_id"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -102,9 +108,10 @@ class APIKey(Base):
     tenant_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
+    user_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), nullable=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     key_prefix: Mapped[str] = mapped_column(String(8), nullable=False)   # first 8 chars (display)
-    key_hash: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)  # bcrypt hash
+    key_hash: Mapped[str] = mapped_column(String(256), nullable=False, unique=True)  # SHA-256 digest
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -112,7 +119,14 @@ class APIKey(Base):
 
     tenant: Mapped["Tenant"] = relationship(back_populates="api_keys")
 
-    __table_args__ = (Index("ix_api_keys_tenant", "tenant_id"),)
+    __table_args__ = (
+        Index("ix_api_keys_tenant", "tenant_id"),
+        Index("ix_api_keys_user", "user_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"], ["users.tenant_id", "users.id"],
+            name="fk_api_keys_tenant_user", ondelete="CASCADE",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +137,9 @@ class TenantQuota(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "window_key"),)
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
-    tenant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
     window_key: Mapped[str] = mapped_column(String(50), nullable=False)  # "2024-01" or "2024-01-15T14:30"
     window_type: Mapped[str] = mapped_column(String(20), nullable=False)  # "monthly" | "minute"
     request_count: Mapped[int] = mapped_column(Integer, default=0)
@@ -140,6 +156,11 @@ class Rule(Base):
     __table_args__ = (
         Index("ix_rules_tenant_active", "tenant_id", "is_active"),
         Index("ix_rules_tenant_category", "tenant_id", "category"),
+        UniqueConstraint("tenant_id", "id", name="uq_rules_tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "parent_rule_id"], ["rules.tenant_id", "rules.id"],
+            name="fk_rules_tenant_parent",
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
@@ -184,6 +205,7 @@ class Case(Base):
     __table_args__ = (
         Index("ix_cases_tenant_status", "tenant_id", "status"),
         Index("ix_cases_tenant_created", "tenant_id", "created_at"),
+        UniqueConstraint("tenant_id", "id", name="uq_cases_tenant_id"),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
@@ -212,9 +234,15 @@ class Case(Base):
     )
 
     tenant: Mapped["Tenant"] = relationship(back_populates="cases")
-    decisions: Mapped[list["Decision"]] = relationship(back_populates="case")
-    overrides: Mapped[list["Override"]] = relationship(back_populates="case")
-    documents: Mapped[list["Document"]] = relationship(back_populates="case")
+    decisions: Mapped[list["Decision"]] = relationship(
+        back_populates="case", foreign_keys="Decision.case_id"
+    )
+    overrides: Mapped[list["Override"]] = relationship(
+        back_populates="case", foreign_keys="Override.case_id"
+    )
+    documents: Mapped[list["Document"]] = relationship(
+        back_populates="case", foreign_keys="Document.case_id"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,13 +253,18 @@ class Decision(Base):
     __table_args__ = (
         Index("ix_decisions_tenant_case", "tenant_id", "case_id"),
         Index("ix_decisions_created", "tenant_id", "created_at"),
+        UniqueConstraint("tenant_id", "id", name="uq_decisions_tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id"], ["cases.tenant_id", "cases.id"],
+            name="fk_decisions_tenant_case", ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
-    case_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False
+    case_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
-    tenant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
 
     classification: Mapped[str] = mapped_column(String(100), nullable=False)
     risk_score: Mapped[float] = mapped_column(Float, nullable=False)
@@ -263,8 +296,10 @@ class Decision(Base):
     is_overridden: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    case: Mapped["Case"] = relationship(back_populates="decisions")
-    overrides: Mapped[list["Override"]] = relationship(back_populates="decision")
+    case: Mapped["Case"] = relationship(back_populates="decisions", foreign_keys=[case_id])
+    overrides: Mapped[list["Override"]] = relationship(
+        back_populates="decision", foreign_keys="Override.decision_id"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -272,26 +307,41 @@ class Decision(Base):
 # ---------------------------------------------------------------------------
 class Override(Base):
     __tablename__ = "overrides"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "decision_id", name="uq_overrides_tenant_decision"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id"], ["cases.tenant_id", "cases.id"],
+            name="fk_overrides_tenant_case", ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "decision_id"], ["decisions.tenant_id", "decisions.id"],
+            name="fk_overrides_tenant_decision", ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"], ["users.tenant_id", "users.id"],
+            name="fk_overrides_tenant_user",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
-    tenant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
-    case_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False
+    tenant_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
-    decision_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("decisions.id", ondelete="CASCADE"), nullable=False
-    )
-    user_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False
-    )
+    case_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    decision_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
     original_action: Mapped[str] = mapped_column(String(200), nullable=False)
     overridden_action: Mapped[str] = mapped_column(String(200), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    case: Mapped["Case"] = relationship(back_populates="overrides")
-    decision: Mapped["Decision"] = relationship(back_populates="overrides")
-    user: Mapped["User"] = relationship(back_populates="overrides")
+    case: Mapped["Case"] = relationship(back_populates="overrides", foreign_keys=[case_id])
+    decision: Mapped["Decision"] = relationship(
+        back_populates="overrides", foreign_keys=[decision_id]
+    )
+    user: Mapped["User"] = relationship(back_populates="overrides", foreign_keys=[user_id])
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +349,13 @@ class Override(Base):
 # ---------------------------------------------------------------------------
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_documents_tenant_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id"], ["cases.tenant_id", "cases.id"],
+            name="fk_documents_tenant_case",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
     tenant_id: Mapped[str] = mapped_column(
@@ -319,21 +376,29 @@ class Document(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tenant: Mapped["Tenant"] = relationship(back_populates="documents")
-    case: Mapped[Optional["Case"]] = relationship(back_populates="documents")
-    chunks: Mapped[list["DocumentChunk"]] = relationship(back_populates="document")
+    case: Mapped[Optional["Case"]] = relationship(
+        back_populates="documents", foreign_keys=[case_id]
+    )
+    chunks: Mapped[list["DocumentChunk"]] = relationship(
+        back_populates="document", foreign_keys="DocumentChunk.document_id"
+    )
 
 
 class DocumentChunk(Base):
     __tablename__ = "document_chunks"
     __table_args__ = (
         Index("ix_chunks_tenant_doc", "tenant_id", "document_id"),
+        ForeignKeyConstraint(
+            ["tenant_id", "document_id"], ["documents.tenant_id", "documents.id"],
+            name="fk_document_chunks_tenant_document", ondelete="CASCADE",
+        ),
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
-    tenant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
-    document_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    tenant_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     )
+    document_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     clause_label: Mapped[Optional[str]] = mapped_column(String(200))
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -341,7 +406,9 @@ class DocumentChunk(Base):
     doc_metadata: Mapped[Optional[Any]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    document: Mapped["Document"] = relationship(back_populates="chunks")
+    document: Mapped["Document"] = relationship(
+        back_populates="chunks", foreign_keys=[document_id]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +423,9 @@ class EventStore(Base):
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
-    tenant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     aggregate_type: Mapped[str] = mapped_column(String(100), nullable=False)  # "case"|"decision"
     aggregate_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
@@ -378,7 +447,9 @@ class AuditLog(Base):
     )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
-    tenant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     entity_type: Mapped[Optional[str]] = mapped_column(String(100))
     entity_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False))
@@ -393,13 +464,37 @@ class AuditLog(Base):
 # ---------------------------------------------------------------------------
 class FeedbackRegistry(Base):
     __tablename__ = "feedback_registry"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "case_id"], ["cases.tenant_id", "cases.id"],
+            name="fk_feedback_tenant_case", ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "decision_id"], ["decisions.tenant_id", "decisions.id"],
+            name="fk_feedback_tenant_decision", ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "rule_id"], ["rules.tenant_id", "rules.id"],
+            name="fk_feedback_tenant_rule",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"], ["users.tenant_id", "users.id"],
+            name="fk_feedback_tenant_user",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=gen_uuid)
-    tenant_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
     case_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
     decision_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
-    rule_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False))
+    rule_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("rules.id", ondelete="SET NULL")
+    )
     feedback_type: Mapped[str] = mapped_column(String(50), nullable=False)  # positive|negative|neutral
     comment: Mapped[Optional[str]] = mapped_column(Text)
-    user_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False))
+    user_id: Mapped[Optional[str]] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

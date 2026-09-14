@@ -67,7 +67,7 @@ def _render_email_action(case: dict, decision: dict | None, c: dict) -> None:
     recipient = st.text_input(
         "Destinatario",
         value=case.get("client_email", ""),
-        placeholder="cliente@correo.com",
+        placeholder="resident@example.com",
         key=f"email_recipient_{case['id']}",
     )
     subject = st.text_input(
@@ -127,7 +127,7 @@ def _render_task_action(case: dict, c: dict) -> None:
 
     assignee = st.text_input(
         "Asignar a",
-        placeholder="nombre@uraki.co",
+        placeholder="operator@example.com",
         key=f"task_assignee_{case['id']}",
     )
     title = st.text_input(

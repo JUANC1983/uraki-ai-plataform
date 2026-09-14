@@ -19,8 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Create directories for storage and logs
-RUN mkdir -p ./storage ./logs && chown -R uraki:uraki /app
+# Create writable directories and make the startup script executable.
+RUN mkdir -p ./storage ./logs \
+    && chmod +x ./docker-entrypoint.sh \
+    && chown -R uraki:uraki /app
 
 USER uraki
 
@@ -28,6 +30,6 @@ EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

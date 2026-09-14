@@ -1,23 +1,21 @@
 # api/routes/auth.py
-from datetime import datetime, timedelta
-from typing import Annotated
+from datetime import datetime, timedelta, timezone
+from typing import Annotated, Literal
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Form, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from passlib.context import CryptContext
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.dependencies import DB
+from api.dependencies import DB, CurrentUser
+from api.response_models import UserResponse
 from config.settings import get_settings
-from database.base import get_db
-from database.models import User
+from core.security import hash_password, validate_password, verify_password
+from database.models import Tenant, User
 
 settings = get_settings()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class Token(BaseModel):
@@ -29,20 +27,27 @@ class Token(BaseModel):
 
 
 class UserCreate(BaseModel):
-    tenant_id: str
+    model_config = ConfigDict(extra="forbid")
     email: EmailStr
-    password: str
-    full_name: str
-    role: str = "operador"
+    password: str = Field(min_length=12, max_length=128)
+    full_name: str = Field(min_length=1, max_length=200)
+    role: Literal["admin", "operador", "legal", "ejecutivo"] = "operador"
+
+    @field_validator("password")
+    @classmethod
+    def password_boundary(cls, value: str) -> str:
+        return validate_password(value)
 
 
 def create_access_token(user: User) -> str:
-    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    issued_at = datetime.now(timezone.utc)
+    expire = issued_at + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
         "sub": str(user.id),
         "tenant_id": str(user.tenant_id),
         "role": user.role,
         "email": user.email,
+        "iat": issued_at,
         "exp": expire,
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
@@ -51,14 +56,24 @@ def create_access_token(user: User) -> str:
 @router.post("/login", response_model=Token)
 async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    tenant_slug: Annotated[str, Form(min_length=1, max_length=100)],
     db: DB,
 ):
+    normalized_email = form_data.username.strip().lower()
+    normalized_slug = tenant_slug.strip().lower()
     result = await db.execute(
-        select(User).where(User.email == form_data.username, User.is_active.is_(True))
+        select(User)
+        .join(Tenant, Tenant.id == User.tenant_id)
+        .where(
+            User.email == normalized_email,
+            User.is_active.is_(True),
+            Tenant.slug == normalized_slug,
+            Tenant.is_active.is_(True),
+        )
     )
     user = result.scalar_one_or_none()
 
-    if not user or not pwd_context.verify(form_data.password, user.hashed_password):
+    if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -75,19 +90,26 @@ async def login(
     )
 
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(payload: UserCreate, db: DB):
-    """Create a new user (admin only in production — open for setup)."""
+@router.post(
+    "/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse
+)
+async def register(payload: UserCreate, current_user: CurrentUser, db: DB):
+    """Create a user inside the authenticated administrator's tenant."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can register users")
+
+    tenant_id = str(current_user.tenant_id)
+    normalized_email = str(payload.email).strip().lower()
     result = await db.execute(
-        select(User).where(User.email == payload.email, User.tenant_id == payload.tenant_id)
+        select(User).where(User.email == normalized_email, User.tenant_id == tenant_id)
     )
     if result.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="User already exists")
 
     user = User(
-        tenant_id=payload.tenant_id,
-        email=payload.email,
-        hashed_password=pwd_context.hash(payload.password),
+        tenant_id=tenant_id,
+        email=normalized_email,
+        hashed_password=hash_password(payload.password),
         full_name=payload.full_name,
         role=payload.role,
     )

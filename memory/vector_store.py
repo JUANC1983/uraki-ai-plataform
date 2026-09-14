@@ -1,29 +1,27 @@
-# memory/vector_store.py
-"""
-Vector Store abstraction — currently backed by pgvector (via JSONB for portability).
-Extend to Pinecone or Weaviate by implementing the same interface.
+"""JSONB embedding search implemented with Python cosine similarity."""
 
-NOTE: For production scale, migrate JSONB embeddings to pgvector extension:
-  CREATE EXTENSION IF NOT EXISTS vector;
-  ALTER TABLE document_chunks ADD COLUMN embedding_vec vector(1536);
-"""
 import math
-import logging
-from typing import Any, Optional
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 
 class VectorStore:
-    """
-    Multi-tenant vector store.
-    All operations are scoped to tenant_id.
-    """
+    """In-process vector ranking over tenant-filtered candidates."""
 
     def cosine_similarity(self, a: list[float], b: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x**2 for x in a))
-        norm_b = math.sqrt(sum(x**2 for x in b))
+        if not a or not b:
+            raise ValueError("Embedding vectors must not be empty")
+        if len(a) != len(b):
+            raise ValueError("Embedding vector dimensions must match")
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            for value in [*a, *b]
+        ):
+            raise ValueError("Embedding vectors must contain finite numeric values")
+        dot = sum(float(x) * float(y) for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(float(x) ** 2 for x in a))
+        norm_b = math.sqrt(sum(float(x) ** 2 for x in b))
         if norm_a == 0 or norm_b == 0:
             return 0.0
         return dot / (norm_a * norm_b)
@@ -35,20 +33,29 @@ class VectorStore:
         top_k: int = 5,
         min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
-        """
-        Rank candidates by cosine similarity.
-        Each candidate must have an 'embedding' key.
-        """
+        """Rank compatible candidate vectors, skipping corrupt stored vectors."""
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
+        if not isinstance(min_score, (int, float)) or not math.isfinite(float(min_score)) or not -1 <= min_score <= 1:
+            raise ValueError("min_score must be finite and between -1 and 1")
+        self.cosine_similarity(query_embedding, query_embedding)
         scored = []
         for candidate in candidates:
-            emb = candidate.get("embedding")
-            if not emb:
+            if not isinstance(candidate, dict):
                 continue
-            score = self.cosine_similarity(query_embedding, emb)
+            embedding = candidate.get("embedding")
+            if not embedding:
+                continue
+            try:
+                score = self.cosine_similarity(query_embedding, embedding)
+            except (TypeError, ValueError):
+                continue
             if score >= min_score:
                 scored.append({**candidate, "score": round(score, 4)})
-
-        scored.sort(key=lambda x: x["score"], reverse=True)
+        scored.sort(key=lambda item: (
+            -item["score"], str(item.get("document_id", item.get("id", ""))),
+            int(item.get("chunk_index", 0)),
+        ))
         return scored[:top_k]
 
     def deduplicate(
@@ -56,21 +63,24 @@ class VectorStore:
         chunks: list[dict[str, Any]],
         threshold: float = 0.95,
     ) -> list[dict[str, Any]]:
-        """
-        Remove near-duplicate chunks (cosine sim > threshold).
-        Useful when ingesting overlapping documents.
-        """
-        unique = []
+        """Remove near-duplicates when stored vector dimensions are compatible."""
+        unique: list[dict[str, Any]] = []
         for chunk in chunks:
-            emb = chunk.get("embedding")
-            if not emb:
+            embedding = chunk.get("embedding")
+            if not embedding:
                 unique.append(chunk)
                 continue
-            is_dup = any(
-                self.cosine_similarity(emb, u["embedding"]) > threshold
-                for u in unique
-                if u.get("embedding")
-            )
-            if not is_dup:
+            is_duplicate = False
+            for existing in unique:
+                existing_embedding = existing.get("embedding")
+                if not existing_embedding:
+                    continue
+                try:
+                    if self.cosine_similarity(embedding, existing_embedding) > threshold:
+                        is_duplicate = True
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if not is_duplicate:
                 unique.append(chunk)
         return unique

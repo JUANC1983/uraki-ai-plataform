@@ -18,6 +18,42 @@ from core.schema_evolution import migrate_decision, stamp_current_decision
 
 logger = logging.getLogger(__name__)
 
+
+def _rule_count(value) -> int:
+    """Normalize API rule traces (lists) and evaluation counts (integers)."""
+    if isinstance(value, list):
+        return len(value)
+    return int(value or 0)
+
+
+def _risk_factor_rows(value) -> list[dict]:
+    """Map the canonical risk breakdown to the rows rendered by the dashboard."""
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if not isinstance(value, dict):
+        return []
+
+    scores = value.get("component_scores") or {}
+    weights = value.get("weights_used") or {}
+    reasons = value.get("component_reasons") or {}
+    if not isinstance(scores, dict):
+        return []
+
+    rows = []
+    for name, raw_score in scores.items():
+        try:
+            score = float(raw_score)
+            weight = float(weights.get(name, 0))
+        except (TypeError, ValueError):
+            continue
+        rows.append({
+            "factor": str(name).replace("_", " ").title(),
+            "value": reasons.get(name) or f"Score {score:.0f}/100",
+            "weight": f"Peso {weight:.0%}",
+            "contribution": score * weight / 100,
+        })
+    return rows
+
 # Actions available in the override selector
 AVAILABLE_ACTIONS: list[str] = [
     "ACTIVAR_POLIZA_Y_NOTIFICAR_ASEGURADORA",
@@ -197,8 +233,8 @@ class DecisionService:
             "why_this_rule":       d.get("why_this_rule", ""),
             "confidence":          float(d.get("confidence", 0)),
             "clause_labels":       d.get("clause_labels", ""),
-            "rules_evaluated":     int(d.get("rules_evaluated", 0)),
-            "rules_discarded":     int(d.get("rules_discarded", 0)),
+            "rules_evaluated":     _rule_count(d.get("rules_evaluated")),
+            "rules_discarded":     _rule_count(d.get("rules_discarded")),
             "is_overridden":       bool(d.get("is_overridden")),
             "override_reason":     d.get("override_reason", ""),
             "original_action":     d.get("original_action", ""),
@@ -206,7 +242,7 @@ class DecisionService:
             "duration_ms":         int(d.get("duration_ms", 0)),
             "created_at":          d.get("created_at", ""),
             # Intelligence layer
-            "risk_factors":        d.get("risk_factors") or [],
+            "risk_factors":        _risk_factor_rows(d.get("risk_factors")),
             "data_used":           d.get("data_used") or {},
             "linked_documents":    d.get("linked_documents") or [],
             "explain":             d.get("explain", ""),
@@ -242,8 +278,8 @@ class DecisionService:
             "why_this_rule":       rule.get("explanation", ""),
             "confidence":          float(r.get("confidence", 0)),
             "clause_labels":       "",
-            "rules_evaluated":     int(r.get("rules_evaluated", 0)),
-            "rules_discarded":     int(r.get("rules_discarded", 0)),
+            "rules_evaluated":     _rule_count(r.get("rules_evaluated")),
+            "rules_discarded":     _rule_count(r.get("rules_discarded")),
             "is_overridden":       False,
             "override_reason":     "",
             "original_action":     "",
@@ -251,7 +287,7 @@ class DecisionService:
             "duration_ms":         int(r.get("duration_ms", 0)),
             "created_at":          "",
             # Intelligence layer
-            "risk_factors":        r.get("risk_factors") or [],
+            "risk_factors":        _risk_factor_rows(r.get("risk_factors")),
             "data_used":           r.get("data_used") or {},
             "linked_documents":    [],
             "explain":             r.get("explain", ""),

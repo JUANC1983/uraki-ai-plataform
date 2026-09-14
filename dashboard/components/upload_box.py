@@ -5,14 +5,11 @@ import core.state_manager as sm
 from styles.theme import COLORS
 from services.decision_service import DecisionService
 
-_ALLOWED_TYPES = ["pdf", "docx", "doc", "png", "jpg", "jpeg"]
+_ALLOWED_TYPES = ["pdf", "docx", "txt"]
 _TYPE_ICONS = {
     "pdf":  "📄",
     "docx": "📝",
-    "doc":  "📝",
-    "png":  "🖼",
-    "jpg":  "🖼",
-    "jpeg": "🖼",
+    "txt":  "📝",
 }
 _TYPE_LABELS = {
     "contrato":       "Contrato",
@@ -98,7 +95,7 @@ def render(case: dict | None) -> None:
             content_type = (
                 "application/pdf" if ext == "pdf"
                 else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                if ext in ("docx", "doc") else f"image/{ext}"
+                if ext == "docx" else "text/plain"
             )
             with st.spinner("Subiendo..."):
                 result, err = DecisionService().upload_document(

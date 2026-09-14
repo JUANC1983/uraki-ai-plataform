@@ -185,6 +185,17 @@ class CaseService:
         return None
 
     def resolve_case(self, case_id: str) -> Optional[str]:
+        case, error = self.get_by_id(case_id)
+        if error or not case:
+            return error or "Caso no encontrado"
+        if case.get("status") == "DECISION_GENERATED":
+            error = self.transition(
+                case_id,
+                "IN_EXECUTION",
+                reason="Ejecución confirmada por operador",
+            )
+            if error:
+                return error
         return self.transition(case_id, "CLOSED", reason="Resuelto por operador")
 
     def escalate_case(self, case_id: str, target: str = "") -> Optional[str]:

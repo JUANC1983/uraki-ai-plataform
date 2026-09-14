@@ -9,17 +9,34 @@
 #   ALLOWED_ORIGINS — comma-separated list of allowed CORS origins
 #
 # Optional:
-#   WORKERS         — number of uvicorn workers (default: 2)
+#   WORKERS         — number of uvicorn workers (default: 1)
 #   PORT            — port to listen on (default: 8000)
+#   RUN_MIGRATIONS  — run Alembic before the supplied command (default: true)
+#   RUN_SCHEDULER   — start in-process scheduler jobs (default: true)
 
 set -euo pipefail
 
-WORKERS="${WORKERS:-2}"
+WORKERS="${WORKERS:-1}"
 PORT="${PORT:-8000}"
+RUN_MIGRATIONS="${RUN_MIGRATIONS:-true}"
+RUN_SCHEDULER="${RUN_SCHEDULER:-true}"
 
-echo "==> Running Alembic migrations..."
-alembic upgrade head
-echo "==> Migrations complete."
+if [[ "${RUN_SCHEDULER,,}" == "true" && "${WORKERS}" != "1" ]]; then
+    echo "ERROR: RUN_SCHEDULER=true requires WORKERS=1 to prevent duplicate jobs." >&2
+    exit 1
+fi
+
+if [[ "${RUN_MIGRATIONS,,}" == "true" ]]; then
+    echo "==> Running Alembic migrations..."
+    alembic upgrade head
+    echo "==> Migrations complete."
+else
+    echo "==> Alembic migrations disabled for this process."
+fi
+
+if [[ "$#" -gt 0 ]]; then
+    exec "$@"
+fi
 
 echo "==> Starting URAKI API (workers=${WORKERS}, port=${PORT})..."
 exec uvicorn main:app \

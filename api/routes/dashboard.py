@@ -1,10 +1,17 @@
 # api/routes/dashboard.py
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from api.dependencies import DB, CurrentUser, TenantCfg
+from api.dependencies import DB, ExecutiveUser, ReadUser, TenantCfg
+from api.response_models import (
+    EventsResponse,
+    ExecutiveResponse,
+    KPIResponse,
+    MetricsResponse,
+    OperationalResponse,
+)
 from core.event_bus import get_event_bus
 from database.repositories import CaseRepository, DecisionRepository
 from database.repositories.case_repository import OverrideRepository
@@ -12,14 +19,14 @@ from database.repositories.case_repository import OverrideRepository
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 
-@router.get("/operational")
+@router.get("/operational", response_model=OperationalResponse)
 async def operational_dashboard(
-    current_user: CurrentUser,
+    current_user: ReadUser,
     db: DB,
-    status_filter: Optional[str] = Query(None, alias="status"),
-    priority: Optional[str] = Query(None),
-    limit: int = Query(50, le=200),
-    offset: int = Query(0),
+    status_filter: Optional[Literal["NEW", "IN_REVIEW", "DECISION_GENERATED", "HUMAN_OVERRIDE", "IN_EXECUTION", "ESCALATED", "CLOSED"]] = Query(None, alias="status"),
+    priority: Optional[Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
     """
     Operational view:
@@ -66,8 +73,8 @@ async def operational_dashboard(
     return {"total": total, "items": enriched}
 
 
-@router.get("/executive")
-async def executive_dashboard(current_user: CurrentUser, db: DB):
+@router.get("/executive", response_model=ExecutiveResponse)
+async def executive_dashboard(current_user: ExecutiveUser, db: DB):
     """
     Executive KPIs:
       - Mora total + aging buckets
@@ -100,8 +107,8 @@ async def executive_dashboard(current_user: CurrentUser, db: DB):
     }
 
 
-@router.get("/kpis")
-async def get_kpis(current_user: CurrentUser, db: DB):
+@router.get("/kpis", response_model=KPIResponse)
+async def get_kpis(current_user: ReadUser, db: DB):
     tenant_id = str(current_user.tenant_id)
     return {
         "cases": await CaseRepository(db, tenant_id).get_kpis(),
@@ -109,9 +116,9 @@ async def get_kpis(current_user: CurrentUser, db: DB):
     }
 
 
-@router.get("/events")
+@router.get("/events", response_model=EventsResponse)
 async def get_events(
-    current_user: CurrentUser,
+    current_user: ExecutiveUser,
     db: DB,
     event_type: Optional[str] = Query(None),
     since_hours: int = Query(24, ge=1, le=720),
@@ -131,8 +138,8 @@ async def get_events(
     return {"count": len(events), "events": events}
 
 
-@router.get("/metrics")
-async def get_metrics(current_user: CurrentUser, db: DB):
+@router.get("/metrics", response_model=MetricsResponse)
+async def get_metrics(current_user: ExecutiveUser, db: DB):
     """
     Product metrics for internal tracking.
     """

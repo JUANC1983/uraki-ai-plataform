@@ -4,7 +4,7 @@ URAKI AI Platform — FastAPI application entry point.
 
 Startup sequence:
   1. Validate SECRET_KEY (refuses to start if insecure)
-  2. Run Alembic migrations (production) OR create tables (DEBUG mode)
+  2. Require schema management through Alembic
   3. Register domain event handlers
   4. Launch background scheduler jobs
   5. Mount all API routers
@@ -17,12 +17,13 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.middleware import RequestLoggingMiddleware, TenantMiddleware
+from api.middleware import RateLimitMiddleware, RequestLoggingMiddleware, TenantMiddleware
 from api.routes import auth, cases, dashboard, decisions, documents, tenants
+from api.response_models import HealthResponse, ReadinessResponse
 from automation.event_handlers import register_all_handlers
 from automation.scheduler import start_scheduler
 from config.settings import get_settings, validate_secret_key
@@ -34,6 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 settings = get_settings()
+EXPECTED_SCHEMA_REVISION = "0003"
 
 # ---------------------------------------------------------------------------
 # Lifespan (startup / shutdown)
@@ -52,43 +54,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     validate_secret_key(settings.SECRET_KEY)
     logger.info("SECRET_KEY validated.")
 
-    # 2. Database schema
-    if settings.DEBUG:
-        # Development convenience: auto-create tables.
-        # WARNING: does not track schema changes — use Alembic for production.
-        logger.warning(
-            "DEBUG mode: using create_tables(). "
-            "Run 'alembic upgrade head' in production before starting the server."
-        )
-        from database.base import create_tables
-        await create_tables()
-    else:
-        # Production: schema must already be migrated via
-        #   alembic upgrade head
-        # (run in docker-entrypoint.sh before uvicorn starts).
-        logger.info("Production mode: skipping create_tables(). "
-                    "Alembic migrations are expected to have run already.")
-
-    logger.info("Database schema ready.")
+    # 2. Database schema is managed only by Alembic. The container entrypoint
+    # applies migrations; local runs must execute `alembic upgrade head` first.
+    logger.info("Database schema is expected at the Alembic head revision.")
 
     # 3. Register event handlers
     bus = get_event_bus()
     register_all_handlers(bus)
     logger.info("Event handlers registered.")
 
-    # 4. Start background scheduler
-    tasks = start_scheduler()
-    _scheduler_tasks.extend(tasks)
-    logger.info("Scheduler started (%d jobs).", len(tasks))
+    # 4. Start background scheduler only in the designated API process.
+    if settings.RUN_SCHEDULER:
+        tasks = start_scheduler()
+        _scheduler_tasks.extend(tasks)
+        logger.info("Scheduler started (%d jobs).", len(tasks))
+    else:
+        logger.info("Scheduler disabled for this process.")
 
-    yield
-
-    # ---- SHUTDOWN ----
-    logger.info("URAKI AI Platform shutting down...")
-    for task in _scheduler_tasks:
-        task.cancel()
-    await asyncio.gather(*_scheduler_tasks, return_exceptions=True)
-    logger.info("Scheduler tasks cancelled. Goodbye.")
+    try:
+        yield
+    finally:
+        # Release scheduler tasks even when application lifespan exits with error.
+        logger.info("URAKI AI Platform shutting down...")
+        for task in _scheduler_tasks:
+            task.cancel()
+        await asyncio.gather(*_scheduler_tasks, return_exceptions=True)
+        _scheduler_tasks.clear()
+        logger.info("Scheduler tasks cancelled. Goodbye.")
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +113,7 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
     )
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(TenantMiddleware)
 
     # ---- Routers ----
@@ -133,9 +126,44 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router, prefix=prefix)
 
     # ---- Health check (always public) ----
-    @app.get("/health", tags=["System"])
+    @app.get("/health", tags=["System"], response_model=HealthResponse)
     async def health() -> JSONResponse:
         return JSONResponse({"status": "ok", "version": settings.APP_VERSION})
+
+    @app.get("/ready", tags=["System"], response_model=ReadinessResponse)
+    async def readiness() -> JSONResponse:
+        """Report whether PostgreSQL is reachable and the migrated schema exists."""
+        from sqlalchemy import text
+
+        from database.base import AsyncSessionLocal
+
+        try:
+            async with AsyncSessionLocal() as db:
+                await db.execute(text("SELECT 1"))
+                revision = await db.execute(text("SELECT version_num FROM alembic_version"))
+                if revision.scalars().all() != [EXPECTED_SCHEMA_REVISION]:
+                    raise RuntimeError("Schema revision mismatch")
+                await db.execute(text("SELECT 1 FROM tenants LIMIT 1"))
+                await db.execute(text("SELECT user_id FROM api_keys LIMIT 0"))
+        except Exception as exc:
+            logger.warning("Readiness check failed (%s)", type(exc).__name__)
+            return JSONResponse(
+                {
+                    "status": "not_ready",
+                    "ready": False,
+                    "database": "unavailable",
+                    "checks": {"database": {"ok": False}},
+                },
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return JSONResponse(
+            {
+                "status": "ready",
+                "ready": True,
+                "database": "ok",
+                "checks": {"database": {"ok": True}},
+            }
+        )
 
     @app.get("/", include_in_schema=False)
     async def root() -> JSONResponse:

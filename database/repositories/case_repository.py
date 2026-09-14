@@ -34,6 +34,13 @@ class CaseRepository(BaseRepository[Case]):
     async def get(self, case_id: str) -> Optional[Case]:
         return await self._get_by_id(case_id)
 
+    async def get_for_update(self, case_id: str) -> Optional[Case]:
+        """Lock one tenant-scoped case for serialized state-changing jobs."""
+        result = await self.session.execute(
+            self._q().where(Case.id == case_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def list(
         self,
         *,
