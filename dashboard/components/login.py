@@ -59,7 +59,7 @@ def render() -> None:
 
         tenant_slug = st.text_input("Tenant", placeholder="mi-organizacion",
                                     key="login_tenant")
-        email    = st.text_input("Correo electrónico", placeholder="operador@uraki.co",
+        email    = st.text_input("Correo electrónico", placeholder="operador@example.com",
                                  key="login_email")
         password = st.text_input("Contraseña", placeholder="••••••••",
                                  type="password", key="login_pw")

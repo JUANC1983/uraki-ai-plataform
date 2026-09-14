@@ -9,7 +9,7 @@ Snapshot: 2026-09-14, local Python 3.11. Local evidence is identified below; hos
 | Latest broad suite | 134 tests PASS after dashboard and CI portability fixes | Local only; final engineering-checkout run |
 | Syntax | AST parse of all Python sources | PASS at last recorded run; writes no bytecode |
 | Demo | `python -B demo.py` | Offline engine walkthrough; valid and invalid configuration paths |
-| Credential/artifact scan | 164 current tracked/nonignored files plus 417 reachable historical blobs scanned | No selected credential signatures or current generated/runtime artifacts detected; manual privacy review remains open |
+| Credential/artifact scan | 164 current tracked/nonignored files plus reachable Git history scanned | No selected credential signatures or current generated/runtime artifacts detected; manual privacy review remains open |
 | Persistence | 0001-0003 upgrade/full downgrade compile offline; ORM constraints, transaction rollback and entity/event atomicity tested | Local/mocked PASS; clean-release CI passed migration, downgrade/upgrade and selected constraint rejection against ephemeral PostgreSQL 16 |
 | API contracts | Every successful JSON operation has an explicit OpenAPI schema; strict inputs, generic 500s, read side effects and tenant-scoped row locks tested | L3 in-process; no live PostgreSQL |
 | Docker | Container contracts tested statically | BLOCKED_BY_ENVIRONMENT: docker executable unavailable |
@@ -18,7 +18,7 @@ Snapshot: 2026-09-14, local Python 3.11. Local evidence is identified below; hos
 | Dashboard | HTTP client contracts, Streamlit login render and a 1440x900 browser capture | Local PASS against the in-memory synthetic golden-path backend; no live PostgreSQL/provider claim |
 | Synthetic golden path | Dashboard client -> JWT login -> case -> document -> decision -> override -> audit/events -> dashboard | PASS in-process with explicit memory fakes; no PostgreSQL/provider claims |
 | Dependency spec | 24 direct runtime dependencies use exact pins; CI and Docker target Python 3.12 | Contract PASS; clean-release hosted CI installed the pins and passed `pip check` |
-| CI | Two jobs: offline quality and PostgreSQL 16 migration/constraint contract | Clean public release PASS, run `34517801187`; this engineering branch remains local and unpushed |
+| CI | Two jobs: offline quality and PostgreSQL 16 migration/constraint contract | Clean public release PASS; hardening PR #1 is published and remains unmerged; current hosted status is visible in GitHub Actions |
 | Public release | Deterministic allowlist, SHA-256 manifest and validation from copied tree | PASS; 165 files at `JUANC1983/uraki-ai-platform`, no old Git history or private audit records |
 
 ## Reproduce available checks

@@ -72,4 +72,4 @@ Application-level tenant predicates are inspectable but do not replace database 
 
 The clean public release passed hosted quality and PostgreSQL contract jobs. Remaining evidence includes full container execution, live provider integration and production operation. Licensing remains a human decision. Existing password hashes created from values over bcrypt's 72-byte limit need an authorized reset before use; this hardening does not rotate credentials.
 
-This engineering checkout retains the identifier `uraki-ai-plataform` and old history. The clean release is published separately as `uraki-ai-platform`; this hardening branch has not been pushed.
+This engineering checkout retains the identifier `uraki-ai-plataform` and old history. The clean release is published separately as `uraki-ai-platform`; the hardening branch is published for review in [PR #1](https://github.com/JUANC1983/uraki-ai-plataform/pull/1) and remains unmerged.
