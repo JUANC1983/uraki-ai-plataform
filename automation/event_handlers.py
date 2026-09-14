@@ -36,17 +36,12 @@ async def on_decision_generated(event: DomainEvent) -> None:
         payload.get("priority"),
     )
 
-    # Auto-notify if CRITICAL priority
+    # Notification delivery is intentionally not attempted: no provider is
+    # configured in this prototype. The decision remains visible in the API
+    # and dashboard for an operator to handle.
     if payload.get("priority") == "CRITICAL":
-        from automation.task_queue import get_task_queue
-        queue = get_task_queue()
-        await queue.run(
-            "send_notification",
-            tenant_id=event.tenant_id,
-            case_id=payload.get("case_id", ""),
-            notification_type="critical_priority_alert",
-            recipient="operations_team",
-            payload=payload,
+        logger.warning(
+            "Critical decision requires operator attention; notification delivery is not configured"
         )
 
 

@@ -5,9 +5,9 @@ DecisionOutput — the canonical, immutable output contract.
 Every decision pipeline MUST return this schema.
 No downstream module may mutate it after creation.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -69,20 +69,29 @@ class DecisionOutput(BaseModel):
     # Identity
     case_id: str
     tenant_id: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     # Classification
     classification: CaseClassification
+    classification_source: Literal["rule_engine", "llm_hint", "default"] = "default"
+    classification_reasoning: Optional[str] = None
 
     # Risk
     risk_score: float = Field(..., ge=0, le=100)
     risk_level: RiskLevel
+    risk_factors: dict[str, Any] = Field(default_factory=dict)
 
     # Priority (derived from risk + flags)
     priority: CasePriority = CasePriority.MEDIUM
 
     # Decision
-    action: str = Field(..., description="Concrete action to execute")
+    action: str = Field(
+        ..., min_length=1, max_length=200,
+        description="Recommended operator action; this contract does not execute it",
+    )
+    decision_source: Literal["rule_engine", "deterministic_fallback"] = (
+        "deterministic_fallback"
+    )
     firmness: Firmness
     next_step: Optional[str] = Field(None, description="Immediate next action for operator")
 
@@ -113,17 +122,29 @@ class DecisionOutput(BaseModel):
 
     # LLM output (advisory only — does not affect rule engine fields)
     confidence: float = Field(default=1.0, ge=0, le=1)
-    suggested_message: Optional[str] = None
+    suggested_message: Optional[str] = Field(default=None, max_length=10000)
 
     @model_validator(mode="after")
     def derive_risk_level(self) -> "DecisionOutput":
-        """risk_level is always consistent with risk_score."""
+        """Derive risk level from the recorded tenant thresholds when available."""
+        thresholds = self.risk_factors.get("thresholds_used", {})
+        resolved = None
+        labels = {"low": RiskLevel.LOW, "medium": RiskLevel.MEDIUM, "high": RiskLevel.HIGH}
+        if isinstance(thresholds, dict):
+            for name in ("low", "medium", "high"):
+                bounds = thresholds.get(name)
+                if isinstance(bounds, dict) and bounds.get("min") is not None and bounds.get("max") is not None:
+                    if float(bounds["min"]) <= self.risk_score <= float(bounds["max"]):
+                        resolved = labels[name]
+                        break
         object.__setattr__(
             self,
             "risk_level",
-            RiskLevel.LOW if self.risk_score <= 30
-            else RiskLevel.MEDIUM if self.risk_score <= 70
-            else RiskLevel.HIGH,
+            resolved or (
+                RiskLevel.LOW if self.risk_score <= 30
+                else RiskLevel.MEDIUM if self.risk_score <= 70
+                else RiskLevel.HIGH
+            ),
         )
         return self
 

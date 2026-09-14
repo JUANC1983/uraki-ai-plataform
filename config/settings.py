@@ -1,6 +1,6 @@
 # config/settings.py
 from functools import lru_cache
-from typing import Optional
+from typing import Literal, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
     API_PREFIX: str = "/api/v1"
+    RUN_SCHEDULER: bool = True
 
     # -------------------------------------------------------------------------
     # SECRET_KEY — no default intentionally.
@@ -38,9 +39,11 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    OPENAI_TIMEOUT_SECONDS: float = 20.0
+    OPENAI_MAX_RETRIES: int = 2
 
     # JWT Auth
-    JWT_ALGORITHM: str = "HS256"
+    JWT_ALGORITHM: Literal["HS256"] = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
@@ -64,13 +67,15 @@ class Settings(BaseSettings):
     # File Storage
     STORAGE_BACKEND: str = "local"  # local | s3
     LOCAL_STORAGE_PATH: str = "./storage"
+    MAX_DOCUMENT_BYTES: int = 10 * 1024 * 1024
     S3_BUCKET: Optional[str] = None
     S3_REGION: Optional[str] = None
     AWS_ACCESS_KEY_ID: Optional[str] = None
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
 
     # Vector Store
-    VECTOR_STORE_BACKEND: str = "pgvector"  # pgvector | pinecone
+    # Current implementation: JSONB persistence with Python cosine similarity.
+    VECTOR_STORE_BACKEND: Literal["jsonb"] = "jsonb"
     PINECONE_API_KEY: Optional[str] = None
     PINECONE_INDEX: Optional[str] = None
 

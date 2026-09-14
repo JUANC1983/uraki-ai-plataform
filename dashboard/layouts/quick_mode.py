@@ -170,12 +170,13 @@ def _build_case_payload() -> dict | None:
         "client_name":            name,
         "overdue_days":           int(days),
         "overdue_amount":         float(amount),
-        "has_policy":             bool(sm.get("qi_has_policy", False)),
-        "has_legal_action":       bool(sm.get("qi_has_legal_action", False)),
-        "previous_overdue_count": int(sm.get("qi_prev_count", 0)),
         "currency":               "COP",
-        "status":                 "NEW",
-        "priority":               "MEDIUM",
+        "case_type":               sm.get("qi_case_type", "mora"),
+        "raw_data": {
+            "has_policy":             bool(sm.get("qi_has_policy", False)),
+            "has_legal_action":       bool(sm.get("qi_has_legal_action", False)),
+            "previous_overdue_count": int(sm.get("qi_prev_count", 0)),
+        },
     }
 
 

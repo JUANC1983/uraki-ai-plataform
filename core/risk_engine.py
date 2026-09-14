@@ -15,8 +15,8 @@ DEFAULT_WEIGHTS = {
 
 DEFAULT_THRESHOLDS = {
     "low": {"min": 0, "max": 30},
-    "medium": {"min": 31, "max": 70},
-    "high": {"min": 71, "max": 100},
+    "medium": {"min": 30, "max": 70},
+    "high": {"min": 70, "max": 100},
 }
 
 

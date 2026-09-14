@@ -16,6 +16,7 @@ def render(case: dict, decision: dict | None) -> None:
     c = COLORS
     case_id = case["id"]
     status = case["status"]
+    allowed_transitions = set(case.get("allowed_transitions") or [])
     is_closed = status == "CLOSED"
     is_escalated = status == "ESCALATED"
 
@@ -112,7 +113,7 @@ def render(case: dict, decision: dict | None) -> None:
         if st.button(
             label="✏ Revisar",
             key=f"review_{case_id}",
-            disabled=is_closed,
+            disabled="IN_REVIEW" not in allowed_transitions,
             use_container_width=True,
         ):
             err = cs.set_status(case_id, "IN_REVIEW")

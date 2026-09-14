@@ -2,13 +2,43 @@
 import hashlib
 import secrets
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Annotated, Any, Literal, Optional
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from api.dependencies import DB, CurrentUser, TenantCfg
-from core.config_engine import get_config_engine
+from api.dependencies import (
+    DB,
+    ManageAPIKeysUser,
+    ManageRulesUser,
+    ManageTenantsUser,
+    ReadUser,
+    TenantCfg,
+)
+from api.response_models import (
+    APIKeyCreatedResponse,
+    APIKeyListItem,
+    ConfigUpdatedResponse,
+    RuleCreatedResponse,
+    RuleHistoryItem,
+    RuleListItem,
+    RuleRollbackResponse,
+    RuleUpdatedResponse,
+    TenantResponse,
+)
+from core.config_engine import (
+    EscalationPolicy,
+    ModuleConfig,
+    PriorityThresholds,
+    RateLimitConfig,
+    RiskThresholds,
+    RiskWeights,
+    ToneSettings,
+    TenantConfig,
+    get_config_engine,
+)
+from core.rule_engine import validate_condition_group, validate_rule_actions
 from database.models import APIKey, User
 from database.repositories import RuleRepository, TenantRepository
 
@@ -19,60 +49,146 @@ router = APIRouter(prefix="/tenants", tags=["Tenants"])
 # Schemas
 # ---------------------------------------------------------------------------
 
+
 class TenantCreate(BaseModel):
-    name: str
-    slug: str
-    plan: str = "starter"
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    slug: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=100)
+    plan: Literal["starter", "pro", "enterprise"] = "starter"
 
 
 class ConfigUpsert(BaseModel):
-    config_key: str
+    model_config = ConfigDict(extra="forbid")
+
+    config_key: Literal[
+        "risk_weights",
+        "risk_thresholds",
+        "priority_thresholds",
+        "escalation_policy",
+        "tone_settings",
+        "rate_limits",
+        "modules",
+        "required_case_fields",
+    ]
     config_value: Any
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_config_section(self) -> "ConfigUpsert":
+        models = {
+            "risk_weights": RiskWeights,
+            "risk_thresholds": RiskThresholds,
+            "priority_thresholds": PriorityThresholds,
+            "escalation_policy": EscalationPolicy,
+            "tone_settings": ToneSettings,
+            "rate_limits": RateLimitConfig,
+            "modules": ModuleConfig,
+        }
+        if self.config_key == "required_case_fields":
+            if (
+                not isinstance(self.config_value, list)
+                or not self.config_value
+                or any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in self.config_value
+                )
+            ):
+                raise ValueError("required_case_fields must be a non-empty list of field names")
+            self.config_value = [item.strip() for item in self.config_value]
+        else:
+            model = models[self.config_key].model_validate(self.config_value)
+            self.config_value = model.model_dump()
+        return self
 
 
 class RuleCreate(BaseModel):
-    name: str
-    category: str
-    priority: int = 100
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    category: Literal["classification", "decision"]
+    priority: int = Field(default=100, ge=0, le=100000)
     conditions: dict[str, Any]
     actions: dict[str, Any]
     constraints: Optional[dict[str, Any]] = None
-    explanation_template: Optional[str] = None
+    explanation_template: Optional[str] = Field(default=None, max_length=5000)
+
+    @field_validator("conditions")
+    @classmethod
+    def validate_conditions(cls, value: dict[str, Any]) -> dict[str, Any]:
+        validate_condition_group(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_actions_for_category(self) -> "RuleCreate":
+        validate_rule_actions(self.actions, self.category)
+        return self
 
 
 class RuleUpdate(BaseModel):
-    name: Optional[str] = None
-    category: Optional[str] = None
-    priority: Optional[int] = None
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    category: Optional[Literal["classification", "decision"]] = None
+    priority: Optional[int] = Field(default=None, ge=0, le=100000)
     conditions: Optional[dict[str, Any]] = None
     actions: Optional[dict[str, Any]] = None
-    explanation_template: Optional[str] = None
+    explanation_template: Optional[str] = Field(default=None, max_length=5000)
+
+    @field_validator("conditions")
+    @classmethod
+    def validate_conditions(cls, value: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        if value is not None:
+            validate_condition_group(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_known_actions(self) -> "RuleUpdate":
+        if self.actions is not None:
+            # Category-less partial updates are fully checked at evaluation
+            # against the stored category; validate their intrinsic shape here.
+            validate_rule_actions(
+                self.actions,
+                self.category or (
+                    "classification" if "classification" in self.actions else "decision"
+                ),
+            )
+        return self
 
 
 class APIKeyCreate(BaseModel):
-    name: str
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
     expires_at: Optional[datetime] = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiration(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("expires_at must include a timezone")
+        if value <= datetime.now(timezone.utc):
+            raise ValueError("expires_at must be in the future")
+        return value
 
 
 # ---------------------------------------------------------------------------
 # Tenant management
 # ---------------------------------------------------------------------------
 
-@router.post("/", status_code=status.HTTP_201_CREATED)
-async def create_tenant(payload: TenantCreate, current_user: CurrentUser, db: DB):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can create tenants")
-    repo = TenantRepository(db)
-    if await repo.get_by_slug(payload.slug):
-        raise HTTPException(status_code=409, detail="Slug already exists")
-    tenant = await repo.create(name=payload.name, slug=payload.slug, plan=payload.plan)
-    await db.commit()
-    return {"id": str(tenant.id), "name": tenant.name, "slug": tenant.slug}
+@router.post(
+    "/", status_code=status.HTTP_201_CREATED, response_model=TenantResponse
+)
+async def create_tenant(payload: TenantCreate, current_user: ManageTenantsUser, db: DB):
+    raise HTTPException(
+        status_code=403,
+        detail="Tenant creation is disabled over HTTP; use the local bootstrap command",
+    )
 
 
-@router.get("/me")
-async def get_my_tenant(current_user: CurrentUser, db: DB, config: TenantCfg):
+@router.get("/me", response_model=TenantResponse)
+async def get_my_tenant(current_user: ReadUser, db: DB, config: TenantCfg):
     repo = TenantRepository(db)
     tenant = await repo.get_by_id(str(current_user.tenant_id))
     if not tenant:
@@ -90,11 +206,8 @@ async def get_my_tenant(current_user: CurrentUser, db: DB, config: TenantCfg):
 # Configuration management
 # ---------------------------------------------------------------------------
 
-@router.post("/me/config")
-async def upsert_config(payload: ConfigUpsert, current_user: CurrentUser, db: DB):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can modify config")
-
+@router.post("/me/config", response_model=ConfigUpdatedResponse)
+async def upsert_config(payload: ConfigUpsert, current_user: ManageTenantsUser, db: DB):
     repo = TenantRepository(db)
     await repo.set_config(
         tenant_id=str(current_user.tenant_id),
@@ -110,8 +223,8 @@ async def upsert_config(payload: ConfigUpsert, current_user: CurrentUser, db: DB
     return {"message": "Configuration updated", "key": payload.config_key}
 
 
-@router.get("/me/config")
-async def get_config(current_user: CurrentUser, config: TenantCfg):
+@router.get("/me/config", response_model=TenantConfig)
+async def get_config(current_user: ReadUser, config: TenantCfg):
     """Return the full strongly-typed config for this tenant."""
     return config.model_dump()
 
@@ -120,9 +233,9 @@ async def get_config(current_user: CurrentUser, config: TenantCfg):
 # Rule management (versioned)
 # ---------------------------------------------------------------------------
 
-@router.get("/me/rules")
+@router.get("/me/rules", response_model=list[RuleListItem])
 async def list_rules(
-    current_user: CurrentUser,
+    current_user: ReadUser,
     db: DB,
     include_history: bool = False,
 ):
@@ -146,10 +259,11 @@ async def list_rules(
     ]
 
 
-@router.post("/me/rules", status_code=status.HTTP_201_CREATED)
-async def create_rule(payload: RuleCreate, current_user: CurrentUser, db: DB):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can create rules")
+@router.post(
+    "/me/rules", status_code=status.HTTP_201_CREATED,
+    response_model=RuleCreatedResponse,
+)
+async def create_rule(payload: RuleCreate, current_user: ManageRulesUser, db: DB):
     repo = RuleRepository(db, str(current_user.tenant_id))
     rule = await repo.create(payload.model_dump(exclude_none=True))
     await db.commit()
@@ -162,11 +276,10 @@ async def create_rule(payload: RuleCreate, current_user: CurrentUser, db: DB):
     }
 
 
-@router.put("/me/rules/{rule_id}")
-async def update_rule(rule_id: str, payload: RuleUpdate, current_user: CurrentUser, db: DB):
+@router.put("/me/rules/{rule_id}", response_model=RuleUpdatedResponse)
+async def update_rule(rule_id: UUID, payload: RuleUpdate, current_user: ManageRulesUser, db: DB):
     """Creates a new version of the rule (old version is closed, not deleted)."""
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can update rules")
+    rule_id = str(rule_id)
     repo = RuleRepository(db, str(current_user.tenant_id))
     try:
         new_version = await repo.update(rule_id, payload.model_dump(exclude_none=True))
@@ -182,11 +295,17 @@ async def update_rule(rule_id: str, payload: RuleUpdate, current_user: CurrentUs
     }
 
 
-@router.post("/me/rules/{rule_id}/rollback")
-async def rollback_rule(rule_id: str, target_version: int, current_user: CurrentUser, db: DB):
+@router.post(
+    "/me/rules/{rule_id}/rollback", response_model=RuleRollbackResponse
+)
+async def rollback_rule(
+    rule_id: UUID,
+    target_version: Annotated[int, Query(ge=1, le=1_000_000)],
+    current_user: ManageRulesUser,
+    db: DB,
+):
     """Roll back a rule to a specific historical version."""
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can rollback rules")
+    rule_id = str(rule_id)
     repo = RuleRepository(db, str(current_user.tenant_id))
     try:
         rolled_back = await repo.rollback(rule_id, target_version)
@@ -201,8 +320,11 @@ async def rollback_rule(rule_id: str, target_version: int, current_user: Current
     }
 
 
-@router.get("/me/rules/{rule_id}/history")
-async def get_rule_history(rule_id: str, current_user: CurrentUser, db: DB):
+@router.get(
+    "/me/rules/{rule_id}/history", response_model=list[RuleHistoryItem]
+)
+async def get_rule_history(rule_id: UUID, current_user: ReadUser, db: DB):
+    rule_id = str(rule_id)
     repo = RuleRepository(db, str(current_user.tenant_id))
     history = await repo.get_version_history(rule_id)
     return [
@@ -218,9 +340,8 @@ async def get_rule_history(rule_id: str, current_user: CurrentUser, db: DB):
 
 
 @router.delete("/me/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def deactivate_rule(rule_id: str, current_user: CurrentUser, db: DB):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can deactivate rules")
+async def deactivate_rule(rule_id: UUID, current_user: ManageRulesUser, db: DB):
+    rule_id = str(rule_id)
     repo = RuleRepository(db, str(current_user.tenant_id))
     ok = await repo.deactivate(rule_id)
     if not ok:
@@ -232,17 +353,18 @@ async def deactivate_rule(rule_id: str, current_user: CurrentUser, db: DB):
 # API Key management
 # ---------------------------------------------------------------------------
 
-@router.post("/me/api-keys", status_code=status.HTTP_201_CREATED)
-async def create_api_key(payload: APIKeyCreate, current_user: CurrentUser, db: DB):
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can create API keys")
-
+@router.post(
+    "/me/api-keys", status_code=status.HTTP_201_CREATED,
+    response_model=APIKeyCreatedResponse,
+)
+async def create_api_key(payload: APIKeyCreate, current_user: ManageAPIKeysUser, db: DB):
     raw_key = f"uraki_{secrets.token_urlsafe(32)}"
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-    prefix = raw_key[:12]
+    prefix = raw_key[:8]
 
     api_key = APIKey(
         tenant_id=str(current_user.tenant_id),
+        user_id=str(current_user.id),
         name=payload.name,
         key_prefix=prefix,
         key_hash=key_hash,
@@ -262,8 +384,8 @@ async def create_api_key(payload: APIKeyCreate, current_user: CurrentUser, db: D
     }
 
 
-@router.get("/me/api-keys")
-async def list_api_keys(current_user: CurrentUser, db: DB):
+@router.get("/me/api-keys", response_model=list[APIKeyListItem])
+async def list_api_keys(current_user: ManageAPIKeysUser, db: DB):
     from sqlalchemy import select
     result = await db.execute(
         select(APIKey).where(
@@ -286,7 +408,8 @@ async def list_api_keys(current_user: CurrentUser, db: DB):
 
 
 @router.delete("/me/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def revoke_api_key(key_id: str, current_user: CurrentUser, db: DB):
+async def revoke_api_key(key_id: UUID, current_user: ManageAPIKeysUser, db: DB):
+    key_id = str(key_id)
     from sqlalchemy import select
     result = await db.execute(
         select(APIKey).where(

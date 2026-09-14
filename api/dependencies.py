@@ -11,6 +11,7 @@ import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Annotated, Optional
+from uuid import UUID
 
 import jwt
 from fastapi import Depends, HTTPException, Request, Security, status
@@ -22,7 +23,7 @@ from config.settings import get_settings
 from core.config_engine import ConfigEngine, TenantConfig, get_config_engine
 from core.event_bus import EventBus, get_event_bus
 from database.base import get_db
-from database.models import APIKey, User
+from database.models import APIKey, Tenant, User
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -55,22 +56,26 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
 async def _user_from_jwt(token: str, db: AsyncSession) -> Optional[User]:
     try:
         payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+            token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["sub", "tenant_id", "iat", "exp"]},
         )
         user_id: str = payload.get("sub", "")
         tenant_id: str = payload.get("tenant_id", "")
         if not user_id or not tenant_id:
             return None
+        UUID(user_id)
+        UUID(tenant_id)
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
-    except jwt.PyJWTError:
+    except (jwt.PyJWTError, ValueError, TypeError, AttributeError):
         return None
 
     result = await db.execute(
-        select(User).where(
+        select(User).join(Tenant, Tenant.id == User.tenant_id).where(
             User.id == user_id,
             User.tenant_id == tenant_id,
             User.is_active.is_(True),
+            Tenant.is_active.is_(True),
         )
     )
     return result.scalar_one_or_none()
@@ -101,19 +106,26 @@ async def _user_from_api_key(raw_key: str, db: AsyncSession) -> Optional[User]:
     if api_key_record.expires_at and api_key_record.expires_at < datetime.now(timezone.utc):
         return None
 
-    # Update last_used_at (fire-and-forget; don't block the request)
-    api_key_record.last_used_at = datetime.now(timezone.utc)
+    # Reject keys without explicit ownership before resolving permissions.
+    if not api_key_record.user_id:
+        logger.warning("Rejected legacy API key without an owning user")
+        return None
 
-    # Load the tenant's admin user as the "identity" for API key requests
-    # In production, link APIKey → User directly instead.
+    # Resolve the user who created the key instead of silently inheriting an
+    # arbitrary tenant administrator's permissions.
     result2 = await db.execute(
-        select(User).where(
+        select(User).join(Tenant, Tenant.id == User.tenant_id).where(
+            User.id == api_key_record.user_id,
             User.tenant_id == api_key_record.tenant_id,
-            User.role == "admin",
             User.is_active.is_(True),
-        ).limit(1)
+            Tenant.is_active.is_(True),
+        )
     )
-    return result2.scalar_one_or_none()
+    user = result2.scalar_one_or_none()
+    if user:
+        api_key_record.last_used_at = datetime.now(timezone.utc)
+        await db.commit()
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -178,5 +190,12 @@ def require_permission(permission: str):
 # ---------------------------------------------------------------------------
 DB = Annotated[AsyncSession, Depends(get_db)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+ReadUser = Annotated[User, Depends(require_permission("read"))]
+WriteUser = Annotated[User, Depends(require_permission("write"))]
+OverrideUser = Annotated[User, Depends(require_permission("override"))]
+ManageRulesUser = Annotated[User, Depends(require_permission("manage_rules"))]
+ManageTenantsUser = Annotated[User, Depends(require_permission("manage_tenants"))]
+ManageAPIKeysUser = Annotated[User, Depends(require_permission("manage_api_keys"))]
+ExecutiveUser = Annotated[User, Depends(require_permission("view_executive"))]
 TenantCfg = Annotated[TenantConfig, Depends(get_tenant_config)]
 Bus = Annotated[EventBus, Depends(get_event_bus)]

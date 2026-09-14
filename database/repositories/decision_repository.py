@@ -60,6 +60,13 @@ class DecisionRepository(BaseRepository[Decision]):
     async def get(self, decision_id: str) -> Optional[Decision]:
         return await self._get_by_id(decision_id)
 
+    async def get_for_update(self, decision_id: str) -> Optional[Decision]:
+        """Lock one tenant-scoped decision before applying a human override."""
+        rows = await self.session.execute(
+            self._q().where(Decision.id == decision_id).with_for_update()
+        )
+        return rows.scalar_one_or_none()
+
     async def get_latest_for_case(self, case_id: str) -> Optional[Decision]:
         rows = await self.session.execute(
             self._q()

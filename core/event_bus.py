@@ -3,18 +3,20 @@
 Event Bus — async, in-process event dispatcher with persistent event store.
 
 Architecture:
-  - Events are stored in the DB (EventStore table) first → guaranteed durability
-  - Then dispatched in-memory to registered async handlers
-  - Handlers run fire-and-forget inside BackgroundTasks or Celery (Celery-ready)
+  - Events are flushed to EventStore before dispatch and committed by the caller
+  - Handlers run in-process, inline or through FastAPI BackgroundTasks
+  - Deferred dispatch uses a database claim to prevent a duplicate attempt
 
 Event types:
   CASE_CREATED, DECISION_GENERATED, OVERRIDE_APPLIED,
   CASE_ESCALATED, DOCUMENT_PROCESSED, RULE_UPDATED
 """
 import logging
+import copy
+import json
 import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Coroutine, Optional
 
 logger = logging.getLogger(__name__)
@@ -29,7 +31,7 @@ AsyncHandler = Callable[["DomainEvent"], Coroutine[Any, Any, None]]
 
 class DomainEvent:
     """
-    Immutable domain event.
+    Domain event with a defensive snapshot of its payload.
 
     Fields:
         event_id      — UUID, unique per event
@@ -49,6 +51,7 @@ class DomainEvent:
     DOCUMENT_PROCESSED = "DOCUMENT_PROCESSED"
     RULE_UPDATED = "RULE_UPDATED"
     CASE_CLOSED = "CASE_CLOSED"
+    CASE_STATUS_CHANGED = "CASE_STATUS_CHANGED"
 
     def __init__(
         self,
@@ -60,13 +63,37 @@ class DomainEvent:
         payload: dict[str, Any],
         occurred_at: Optional[datetime] = None,
     ) -> None:
+        known = {self.CASE_CREATED, self.DECISION_GENERATED, self.OVERRIDE_APPLIED,
+                 self.CASE_ESCALATED, self.DOCUMENT_PROCESSED, self.RULE_UPDATED,
+                 self.CASE_CLOSED, self.CASE_STATUS_CHANGED}
+        if event_type not in known:
+            raise ValueError("Unknown domain event type")
+        if aggregate_type not in {"case", "decision", "document", "rule"}:
+            raise ValueError("Unknown event aggregate type")
+        if not isinstance(tenant_id, str) or not isinstance(aggregate_id, str):
+            raise ValueError("Event requires tenant and aggregate identifiers")
+        try:
+            uuid.UUID(tenant_id)
+            uuid.UUID(aggregate_id)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("Event identifiers must be UUIDs") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Event payload must be an object")
+        try:
+            json.dumps(payload, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Event payload must contain finite JSON values") from exc
+        if occurred_at is not None and (
+            not isinstance(occurred_at, datetime) or occurred_at.tzinfo is None
+        ):
+            raise ValueError("Event occurrence time must be timezone-aware")
         self.event_id = str(uuid.uuid4())
         self.event_type = event_type
         self.tenant_id = tenant_id
         self.aggregate_type = aggregate_type
         self.aggregate_id = aggregate_id
-        self.payload = payload
-        self.occurred_at = occurred_at or datetime.utcnow()
+        self.payload = copy.deepcopy(payload)
+        self.occurred_at = occurred_at or datetime.now(timezone.utc)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -75,7 +102,7 @@ class DomainEvent:
             "tenant_id": self.tenant_id,
             "aggregate_type": self.aggregate_type,
             "aggregate_id": self.aggregate_id,
-            "payload": self.payload,
+            "payload": copy.deepcopy(self.payload),
             "occurred_at": self.occurred_at.isoformat(),
         }
 
@@ -109,8 +136,9 @@ class EventBus:
 
     def subscribe(self, event_type: str, handler: AsyncHandler) -> None:
         """Register an async handler for an event type."""
-        self._handlers[event_type].append(handler)
-        logger.debug("EventBus: subscribed handler %s to %s", handler.__name__, event_type)
+        if handler not in self._handlers[event_type]:
+            self._handlers[event_type].append(handler)
+            logger.debug("EventBus: subscribed handler %s to %s", handler.__name__, event_type)
 
     def subscribe_many(self, mapping: dict[str, AsyncHandler]) -> None:
         for event_type, handler in mapping.items():
@@ -133,9 +161,10 @@ class EventBus:
 
         if background_tasks is not None:
             # Defer handler execution to after response
-            background_tasks.add_task(self._dispatch, event)
+            background_tasks.add_task(self._dispatch_and_mark, event)
         else:
-            await self._dispatch(event)
+            errors = await self._dispatch(event)
+            await self._mark_processed(event.event_id, db, error="; ".join(errors) or None)
 
         return event.event_id
 
@@ -170,6 +199,8 @@ class EventBus:
                 "aggregate_id": str(row.aggregate_id),
                 "payload": row.payload,
                 "processed": row.processed,
+                "processed_at": row.processed_at.isoformat() if row.processed_at else None,
+                "error": row.error,
                 "created_at": row.created_at.isoformat(),
             }
             for row in result.scalars().all()
@@ -194,19 +225,54 @@ class EventBus:
         await db.flush()
         logger.debug("EventBus: persisted %s", event.event_type)
 
-    async def _dispatch(self, event: DomainEvent) -> None:
+    async def _dispatch(self, event: DomainEvent) -> list[str]:
+        errors: list[str] = []
         handlers = self._handlers.get(event.event_type, [])
         for handler in handlers:
             try:
-                await handler(event)
+                await handler(copy.deepcopy(event))
             except Exception as exc:
+                errors.append(f"{handler.__name__}:{type(exc).__name__}")
                 logger.error(
-                    "EventBus handler %s failed for event %s: %s",
+                    "EventBus handler %s failed for event %s id=%s (%s)",
                     handler.__name__,
                     event.event_type,
-                    exc,
-                    exc_info=True,
+                    event.event_id,
+                    type(exc).__name__,
                 )
+        return errors
+
+    async def _dispatch_and_mark(self, event: DomainEvent) -> None:
+        """Claim a committed event before one dispatch attempt; no automatic retry.
+
+        A crash after the claim leaves dispatch_in_progress for operator review.
+        This favors avoiding duplicate intent over guaranteed delivery.
+        """
+        from database.base import AsyncSessionLocal
+        from database.models import EventStore
+        from sqlalchemy import select
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(EventStore).where(
+                EventStore.id == event.event_id,
+                EventStore.tenant_id == event.tenant_id,
+            ).with_for_update())
+            record = result.scalar_one_or_none()
+            if record is None:
+                raise RuntimeError("Deferred event is not committed")
+            if record.processed:
+                return
+            record.processed = True
+            record.processed_at = datetime.now(timezone.utc)
+            record.error = "dispatch_in_progress"
+            await db.commit()
+            errors = await self._dispatch(event)
+            await self._mark_processed(
+                event.event_id,
+                db,
+                error="; ".join(errors) or None,
+            )
+            await db.commit()
 
     async def _mark_processed(self, event_id: str, db: Any, error: Optional[str] = None) -> None:
         from sqlalchemy import select
@@ -216,9 +282,8 @@ class EventBus:
         record = result.scalar_one_or_none()
         if record:
             record.processed = True
-            record.processed_at = datetime.utcnow()
-            if error:
-                record.error = error
+            record.processed_at = datetime.now(timezone.utc)
+            record.error = error
 
 
 # Singleton

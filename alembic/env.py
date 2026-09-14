@@ -10,7 +10,7 @@ Usage:
     alembic history               # show migration history
 
 For an existing database created by create_tables() before Alembic was set up:
-    alembic stamp 0001_initial_schema   # mark DB as already at initial revision
+    alembic stamp 0001                  # mark DB as already at initial revision
     alembic upgrade head                # apply only newer migrations (e.g. 0002+)
 """
 import asyncio

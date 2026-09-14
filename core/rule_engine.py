@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from core.decision_contract import CaseClassification, Firmness
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,6 +144,74 @@ _OPERATORS: dict[str, Any] = {
     "any_clause_contains":   _any_clause_contains_op,
     "clause_label_matches":  _clause_label_matches_op,
 }
+
+SUPPORTED_OPERATORS = frozenset(_OPERATORS)
+SUPPORTED_LOGIC_OPERATORS = frozenset({"AND", "OR", "NOT"})
+
+
+def validate_rule_actions(actions: Any, category: str) -> None:
+    """Validate both newly submitted and historically stored rule actions."""
+    if not isinstance(actions, dict):
+        raise ValueError("actions must be an object")
+    if category == "classification":
+        if set(actions) != {"classification"}:
+            raise ValueError("classification rules require only actions.classification")
+        CaseClassification(actions["classification"])
+        return
+    if category != "decision":
+        raise ValueError("unsupported rule category")
+    allowed = {
+        "action", "firmness", "escalation_required", "escalation_target",
+        "legal_flag", "policy_flag", "next_step", "what_happens_next",
+    }
+    unknown = set(actions) - allowed
+    if unknown:
+        raise ValueError(f"unsupported decision action fields: {sorted(unknown)}")
+    action = actions.get("action")
+    if not isinstance(action, str) or not action.strip() or len(action) > 200:
+        raise ValueError("decision rules require a bounded non-empty actions.action")
+    if "firmness" in actions:
+        Firmness(actions["firmness"])
+    for key in ("escalation_required", "legal_flag", "policy_flag"):
+        if key in actions and not isinstance(actions[key], bool):
+            raise ValueError(f"actions.{key} must be boolean")
+    if actions.get("escalation_required") and not actions.get("escalation_target"):
+        raise ValueError("escalating decisions require actions.escalation_target")
+    for key in ("escalation_target", "next_step", "what_happens_next"):
+        if key in actions and (
+            not isinstance(actions[key], str) or not actions[key].strip() or len(actions[key]) > 2000
+        ):
+            raise ValueError(f"actions.{key} must be bounded non-empty text")
+
+
+def validate_condition_group(group: Any, *, path: str = "conditions") -> None:
+    """Reject malformed rule definitions before they can affect decisions."""
+    if not isinstance(group, dict):
+        raise ValueError(f"{path} must be an object")
+
+    if "logic" in group:
+        logic = str(group.get("logic", "")).upper()
+        if logic not in SUPPORTED_LOGIC_OPERATORS:
+            raise ValueError(f"{path}.logic has unsupported value '{logic}'")
+        conditions = group.get("conditions")
+        if not isinstance(conditions, list) or not conditions:
+            raise ValueError(f"{path}.conditions must be a non-empty list")
+        if logic == "NOT" and len(conditions) != 1:
+            raise ValueError(f"{path}.conditions must contain exactly one item for NOT")
+        for index, condition in enumerate(conditions):
+            validate_condition_group(condition, path=f"{path}.conditions[{index}]")
+        return
+
+    field_name = group.get("field")
+    operator_name = group.get("op")
+    if not isinstance(field_name, str) or not field_name.strip():
+        raise ValueError(f"{path}.field must be a non-empty string")
+    if operator_name not in SUPPORTED_OPERATORS:
+        raise ValueError(f"{path}.op has unsupported value '{operator_name}'")
+    if operator_name == "between":
+        value = group.get("value")
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            raise ValueError(f"{path}.value must contain two bounds for 'between'")
 
 
 def _resolve_value(value: Any, context: dict[str, Any]) -> Any:
@@ -276,7 +346,12 @@ class RuleEngine:
         discarded: list[RuleEvaluationResult] = []
 
         for rule in active:
-            matched, reason = _evaluate_condition_group(rule.conditions, context)
+            try:
+                validate_condition_group(rule.conditions)
+                validate_rule_actions(rule.actions, rule.category)
+                matched, reason = _evaluate_condition_group(rule.conditions, context)
+            except (TypeError, ValueError) as exc:
+                matched, reason = False, f"Invalid rule definition: {exc}"
             result = RuleEvaluationResult(
                 rule=rule,
                 matched=matched,
@@ -299,7 +374,7 @@ class RuleEngine:
             )
 
         # Sort by priority (lower number = higher priority)
-        matching.sort(key=lambda r: r.rule.priority)
+        matching.sort(key=lambda r: (r.rule.priority, r.rule.id))
         winner = matching[0]
         conflict_notes: list[str] = []
 

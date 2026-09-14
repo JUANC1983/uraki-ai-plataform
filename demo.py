@@ -65,18 +65,18 @@ banner("URAKI AI PLATFORM — Complete Decision Walkthrough")
 
 step(1, "CASE INPUT")
 print("""
-  A property manager submits case data from their CRM.
-  This is the raw input the API receives at POST /cases/{id}/evaluate.
+  Synthetic input only; this walkthrough does not connect to a CRM.
+  This walkthrough feeds internal engines directly; it does not call the API.
 """)
 
 CASE = {
     # Identity
-    "case_id":                "CASE-2024-001847",
-    "tenant_id":              "tenant-uraki-prod",
-    "client_name":            "Carlos Mendoza Rios",
-    "client_id_number":       "1020384756",
-    "property_address":       "Calle 85 #12-34, Apto 502, Bogota",
-    "contract_id":            "CTR-2022-0089",
+    "case_id":                "CASE-SYNTHETIC-001",
+    "tenant_id":              "tenant-synthetic-demo",
+    "client_name":            "RESIDENTE SINTETICO 001",
+    "client_id_number":       "SYNTHETIC-ID-001",
+    "property_address":       "INMUEBLE SINTETICO 001 (sin direccion real)",
+    "contract_id":            "CONTRACT-SYNTHETIC-001",
     # Financial
     "case_type":              "mora",
     "overdue_days":           97,
@@ -135,8 +135,8 @@ RAW_TENANT_CONFIG = {
     },
     "risk_thresholds": {
         "low":    {"min": 0,  "max": 30},
-        "medium": {"min": 31, "max": 70},
-        "high":   {"min": 71, "max": 100},
+        "medium": {"min": 30, "max": 70},
+        "high":   {"min": 70, "max": 100},
     },
     "priority_thresholds": {
         "critical": 85,
@@ -156,9 +156,9 @@ RAW_TENANT_CONFIG = {
     },
     "modules": {
         "document_intelligence": True,
-        "llm_classification":    True,
-        "auto_messaging":        True,
-        "auto_escalation":       True,
+        "llm_classification":    False,
+        "auto_messaging":        False,
+        "auto_escalation":       False,
         "priority_scoring":      True,
     },
     "required_case_fields": ["client_name", "overdue_days", "monthly_rent"],
@@ -408,7 +408,7 @@ DECISION_RULES = [
         },
         constraints=None,
         explanation_template=(
-            "Clausula de penalidad por mora identificada en contrato CTR-2022-0089. "
+            "Clausula de penalidad por mora identificada en contrato CONTRACT-SYNTHETIC-001. "
             "Se aplica cargo adicional del 2% mensual."
         ),
         is_active=True, version=1,
@@ -526,7 +526,7 @@ from core.decision_contract import (
 # Build document references from matched clause evidence
 doc_refs = [
     DocumentReference(
-        document_id="doc-CTR-2022-0089",
+        document_id="doc-CONTRACT-SYNTHETIC-001",
         clause_id="CLAUSULA 12 - MORA",
         snippet=(
             "Transcurridos 90 dias de mora se procedera con proceso juridico. "
@@ -535,7 +535,7 @@ doc_refs = [
         relevance="Define el umbral de 90 dias para accion legal y penalidad aplicable",
     ),
     DocumentReference(
-        document_id="doc-CTR-2022-0089",
+        document_id="doc-CONTRACT-SYNTHETIC-001",
         clause_id="CLAUSULA 7 - POLIZA",
         snippet="La aseguradora cubrira hasta 3 canones en caso de incumplimiento.",
         relevance="Confirma cobertura de poliza activa — aplica a este caso",
@@ -696,10 +696,10 @@ print(f"    tone_guidance        \"{constraints['tone_guidance'][:60]}...\"")
 
 # ── Simulated LLM output ────────────────────────────────────────────
 SIMULATED_MESSAGE = (
-    "Estimado Sr. Carlos Mendoza Rios,\n\n"
+    "Estimado Sr. RESIDENTE SINTETICO 001,\n\n"
     "Por medio de la presente, URAKI Inmobiliaria se dirige a usted con relacion\n"
-    "al inmueble ubicado en Calle 85 #12-34, Apto 502, Bogota, correspondiente al\n"
-    "contrato de arrendamiento No. CTR-2022-0089.\n\n"
+    "al inmueble ubicado en INMUEBLE SINTETICO 001 (sin direccion real), correspondiente al\n"
+    "contrato de arrendamiento No. CONTRACT-SYNTHETIC-001.\n\n"
     "A la fecha, registramos un saldo vencido de $4,850,000 COP con 97 dias de mora,\n"
     "lo cual supera el umbral establecido en la CLAUSULA 12 - MORA de su contrato.\n\n"
     "En razon de lo anterior, y considerando que usted cuenta con poliza de\n"
@@ -787,7 +787,7 @@ print(f"    Top-level keys:  {list(card_dict.keys())}")
 print(f"    JSON size:       {len(card.to_json())} bytes")
 print(f"    Generated at:    {card.generated_at[:19]}")
 
-section("Audit trail (stored in decisions table)")
+section("Audit payload preview (not persisted by this demo)")
 audit = decision.to_audit_dict()
 print(f"    rules_evaluated : {len(audit['rules_evaluated'])} rules")
 print(f"    rules_discarded : {len(audit['rules_discarded'])} rules")
@@ -795,22 +795,30 @@ print(f"    document_refs   : {len(audit['document_references'])} clauses refere
 print(f"    timestamp       : {audit['timestamp']}")
 print(f"    JSON size       : {len(json.dumps(audit))} bytes")
 
-section("Events published to EventStore")
+section("Illustrative event sequence (not published by this demo)")
 print(f"    1. CASE_CREATED         (on initial case creation)")
 print(f"    2. DECISION_GENERATED   (this evaluation)")
 print(f"    3. CASE_ESCALATED       (auto-triggered: escalation_required=True)")
 
-section("What happens next")
+section("Illustrative integration path (not executed; delivery is unimplemented)")
 print(f"    - Decision persisted to DB (decisions table)")
 print(f"    - Case status: IN_REVIEW -> DECISION_GENERATED")
 print(f"    - Case priority updated: {priority_result.priority.value}")
 print(f"    - Event DECISION_GENERATED dispatched to handlers")
-print(f"    - Handler triggers: send_notification (CRITICAL priority)")
-print(f"    - Handler triggers: auto_escalate -> escalation_target=poliza")
+print("    - Notification delivery is not implemented; no message is sent")
+print("    - External escalation is not executed by this demo")
 print(f"    - Operator sees case at top of queue with {priority_result.priority.value} badge")
 print(f"    - Operator can: approve action / override / request clarification")
 print()
 print("=" * W)
+from pydantic import ValidationError
+from core.config_engine import RiskWeights
+try:
+    RiskWeights(overdue_days=0, economic_impact=0, legal_risk=0, recurrence=0)
+except ValidationError:
+    print("  [PASS] Invalid all-zero scoring weights rejected.")
+else:
+    raise AssertionError("Unsafe scoring configuration was accepted")
 print("  Demo complete. No database, no network calls used.")
 print("=" * W)
 print()

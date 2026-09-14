@@ -22,9 +22,8 @@ LOGO_SVG = """
 _ROLE_ICONS = {
     "operador":  "👤",
     "legal":     "⚖",
-    "gerente":   "📊",
+    "ejecutivo": "📊",
     "admin":     "🔧",
-    "auditor":   "🔍",
 }
 
 _PLAN_BADGES = {
@@ -127,9 +126,9 @@ def render() -> None:
         view_options = {
             "flow":          "⚡ Flow",
             "quick":         "🚀 Quick",
-            "executive":     "📊 Gerencial",
-            "observability": "📡 Sistema",
         }
+        if role in {"admin", "ejecutivo"}:
+            view_options["executive"] = "📊 Gerencial"
         current_view = sm.get("view_mode", "flow")
         new_view = st.selectbox(
             label="",
@@ -160,7 +159,7 @@ def render() -> None:
         </div>
         """
         with st.container():
-    st.markdown(html, unsafe_allow_html=True)
+            st.markdown(html, unsafe_allow_html=True)
 
     with col_logout:
         if st.button("↩", key="logout_btn", help="Cerrar sesión"):

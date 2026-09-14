@@ -76,6 +76,7 @@ section("C2 — Rate limiter: broken db_factory removed")
 
 try:
     src = open("api/middleware.py", encoding="utf-8").read()
+    tree = ast.parse(src)
 
     # Check that db_factory is not actually called (a comment mention is fine)
     import re as _re
@@ -118,8 +119,15 @@ try:
     else:
         fail("Missing RETURNING clause")
 
-    # The old read-then-write pattern: select + scalar_one_or_none + request_count = +1
-    if "scalar_one_or_none" not in src:
+    # Inspect only _check_rate_limit. TenantMiddleware legitimately uses
+    # scalar_one_or_none() to resolve an API-key tenant hint.
+    rate_limit_fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_check_rate_limit"
+    )
+    rate_limit_src = ast.get_source_segment(src, rate_limit_fn) or ""
+    if "scalar_one_or_none" not in rate_limit_src:
         ok("Old read-then-write SELECT removed")
     else:
         fail("Old read-then-write SELECT still present")
@@ -282,12 +290,12 @@ try:
     else:
         fail("alembic upgrade head missing from docker-entrypoint.sh")
 
-    # main.py no longer calls create_tables() unconditionally
+    # Runtime startup must not create an Alembic-divergent schema.
     main_src = open("main.py", encoding="utf-8").read()
-    if "await create_tables()" not in main_src or "if settings.DEBUG" in main_src:
-        ok("create_tables() gated behind DEBUG flag in lifespan")
+    if "await create_tables()" not in main_src:
+        ok("Runtime startup does not bypass Alembic with create_tables()")
     else:
-        fail("create_tables() still called unconditionally in lifespan")
+        fail("Runtime startup still calls create_tables() outside Alembic")
 
     # Alembic env.py imports all models for autogenerate
     env_src = open("alembic/env.py", encoding="utf-8").read()

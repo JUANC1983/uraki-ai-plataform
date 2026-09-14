@@ -15,11 +15,15 @@ import streamlit as st
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000/api/v1")
 
 
-def login(email: str, password: str) -> Optional[str]:
+def login(tenant_slug: str, email: str, password: str) -> Optional[str]:
     try:
         resp = requests.post(
             f"{API_BASE}/auth/login",
-            data={"username": email, "password": password},
+            data={
+                "tenant_slug": tenant_slug,
+                "username": email,
+                "password": password,
+            },
             timeout=10,
         )
         if resp.status_code == 200:
@@ -51,10 +55,11 @@ def api_get(path: str, token: str) -> Optional[dict]:
 def page_login() -> None:
     st.title("URAKI AI — Executive")
     with st.form("login"):
+        tenant_slug = st.text_input("Tenant", help="Identificador corto de la organización")
         email = st.text_input("Email")
         password = st.text_input("Contraseña", type="password")
         if st.form_submit_button("Ingresar"):
-            token = login(email, password)
+            token = login(tenant_slug, email, password)
             if token:
                 st.session_state["token"] = token
                 st.session_state["email"] = email

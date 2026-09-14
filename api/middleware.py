@@ -5,6 +5,7 @@ Middleware stack:
   2. RateLimitMiddleware — per-tenant atomic sliding window (DB-backed)
   3. RequestLoggingMiddleware — structured request logs
 """
+import hashlib
 import logging
 import time
 from datetime import datetime, timezone
@@ -19,11 +20,11 @@ logger = logging.getLogger(__name__)
 PUBLIC_PATHS = frozenset({
     "/",
     "/health",
+    "/ready",
     "/docs",
     "/redoc",
     "/openapi.json",
     "/api/v1/auth/login",
-    "/api/v1/auth/register",
 })
 
 
@@ -56,6 +57,30 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 tenant_hint = payload.get("tenant_id", "unknown")
             except Exception:
                 pass
+        elif request.headers.get("X-API-Key"):
+            # Resolve only a tenant hint here. Full authentication and key
+            # ownership checks remain in the route dependency.
+            try:
+                from sqlalchemy import select
+
+                from database.base import AsyncSessionLocal
+                from database.models import APIKey
+
+                key_hash = hashlib.sha256(
+                    request.headers["X-API-Key"].encode()
+                ).hexdigest()
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(
+                        select(APIKey.tenant_id).where(
+                            APIKey.key_hash == key_hash,
+                            APIKey.is_active.is_(True),
+                        )
+                    )
+                    resolved_tenant = result.scalar_one_or_none()
+                    if resolved_tenant:
+                        tenant_hint = str(resolved_tenant)
+            except Exception:
+                logger.warning("Could not resolve API key tenant for rate limiting")
 
         request.state.tenant_hint = tenant_hint
         response = await call_next(request)
@@ -81,7 +106,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     For high-traffic (>500 RPM per tenant): replace with Redis INCR + EXPIRE.
     """
 
-    DEFAULT_RPM: int = 120
+    DEFAULT_RPM: int = 100
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         if request.url.path in PUBLIC_PATHS:
@@ -105,7 +130,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 )
         except Exception as exc:
             # Never block requests due to rate limit errors — fail open
-            logger.warning("Rate limit check failed (fail-open): %s", exc)
+            logger.warning("Rate limit check failed open (%s)", type(exc).__name__)
 
         return await call_next(request)
 
@@ -115,30 +140,33 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         Returns (exceeded, detail_message).
         """
         from database.base import AsyncSessionLocal
+        from core.config_engine import get_config_engine
         from database.models import TenantQuota
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         window_key = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M")
-        rpm_limit = self.DEFAULT_RPM
-
-        # Single atomic statement: insert or increment, then return current count
-        stmt = (
-            pg_insert(TenantQuota)
-            .values(
-                tenant_id=tenant_id,
-                window_key=window_key,
-                window_type="minute",
-                request_count=1,
-            )
-            .on_conflict_do_update(
-                # Matches the UniqueConstraint("tenant_id", "window_key")
-                index_elements=["tenant_id", "window_key"],
-                set_={"request_count": TenantQuota.request_count + 1},
-            )
-            .returning(TenantQuota.request_count)
-        )
 
         async with AsyncSessionLocal() as db:
+            config = await get_config_engine().load(tenant_id, db)
+            if not config.rate_limits.enabled:
+                return False, ""
+            rpm_limit = config.rate_limits.requests_per_minute
+
+            # Single atomic statement: insert or increment, then return count.
+            stmt = (
+                pg_insert(TenantQuota)
+                .values(
+                    tenant_id=tenant_id,
+                    window_key=window_key,
+                    window_type="minute",
+                    request_count=1,
+                )
+                .on_conflict_do_update(
+                    index_elements=["tenant_id", "window_key"],
+                    set_={"request_count": TenantQuota.request_count + 1},
+                )
+                .returning(TenantQuota.request_count)
+            )
             result = await db.execute(stmt)
             count = result.scalar()
             await db.commit()

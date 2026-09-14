@@ -69,8 +69,6 @@ def render(case: dict, decision: dict | None) -> None:
     if decision is None:
         _render_no_decision(case, c)
     else:
-        _maybe_store_memory(case, decision)
-
         # ── 1. Super decision header — first thing operator sees ──────────
         _render_super_header(case, decision, c)
 
@@ -83,13 +81,11 @@ def render(case: dict, decision: dict | None) -> None:
         # ── 4. Everything else collapsed ──────────────────────────────────
         with st.expander("📊 Por qué esta decisión", expanded=False):
             _render_reasoning(decision, c)
-            _render_intelligence_layer(decision, c)
+
+        _render_intelligence_layer(decision, c)
 
         with st.expander("🧠 Inteligencia y sugerencias", expanded=False):
             _render_context_intelligence(case, decision, c)
-
-        with st.expander("💡 Casos similares en memoria", expanded=False):
-            _render_similar_strip(case, c)
 
         with st.expander("📄 Evidencia contractual", expanded=False):
             _render_evidence(case, decision, c)
@@ -97,16 +93,15 @@ def render(case: dict, decision: dict | None) -> None:
         # Audit trace — has internal expander, rendered directly
         _render_audit_trace(case, decision, c)
 
-        # ── 5. Feedback — compact, at bottom ─────────────────────────────
-        _render_inline_feedback(decision, c)
-
         # Role-gated operator tools
         from components.override_modal import render as render_override
         render_override(case, decision)
         from components.simulation_panel import render as render_simulation
         render_simulation(case, decision)
-        from components.action_engine import render as render_actions
-        render_actions(case, decision)
+        st.caption(
+            "El envío de notificaciones y la asignación de tareas no están "
+            "implementados en este prototipo."
+        )
         from components.audit_timeline import render as render_timeline
         render_timeline(case)
 
@@ -118,7 +113,7 @@ def render(case: dict, decision: dict | None) -> None:
 def _render_super_header(case: dict, decision: dict, c: dict) -> None:
     """
     Dominant block. First thing the operator sees.
-    Large action, risk, confidence, Listo para enviar.
+    Large action, risk, confidence, and generated-state indicator.
     No competing elements — pure signal.
     """
     action        = decision.get("action", "REVISAR_MANUALMENTE")
@@ -167,7 +162,7 @@ def _render_super_header(case: dict, decision: dict, c: dict) -> None:
             </div>
             <span style="font-size:11px;color:#22C55E;font-weight:600;
                 background:rgba(34,197,94,0.10);border-radius:10px;
-                padding:3px 11px;">✓ Listo para enviar</span>
+                padding:3px 11px;">✓ Recomendación generada</span>
         </div>
         <div style="display:flex;align-items:center;gap:14px;margin-bottom:1rem;">
             <span style="font-size:30px;line-height:1;">{icon}</span>
@@ -418,16 +413,21 @@ def _render_context_intelligence(case: dict, decision: dict, c: dict) -> None:
         """, unsafe_allow_html=True)
 
     if deferred:
-        with st.expander(f"💡 {len(deferred)} sugerencia(s) adicional(es)", expanded=False):
-            for s in deferred:
-                sc = _TYPE_COLORS.get(s.get("type", "suggestion"), c["text_muted"])
-                st.markdown(f"""
-                <div style="font-size:11px;color:{c['text_secondary']};
-                    padding:0.3rem 0;border-bottom:1px solid {c['border_subtle']};">
-                    <span style="color:{sc};font-weight:600;">{s.get('icon','')} {s.get('title','')}</span>
-                    — {s.get('message','')}
-                </div>
-                """, unsafe_allow_html=True)
+        st.markdown(
+            f"<div style=\"font-size:10px;color:{c['text_muted']};"
+            "text-transform:uppercase;letter-spacing:0.08em;margin:0.65rem 0 0.25rem;\">"
+            f"{len(deferred)} sugerencia(s) adicional(es)</div>",
+            unsafe_allow_html=True,
+        )
+        for s in deferred:
+            sc = _TYPE_COLORS.get(s.get("type", "suggestion"), c["text_muted"])
+            st.markdown(f"""
+            <div style="font-size:11px;color:{c['text_secondary']};
+                padding:0.3rem 0;border-bottom:1px solid {c['border_subtle']};">
+                <span style="color:{sc};font-weight:600;">{s.get('icon','')} {s.get('title','')}</span>
+                — {s.get('message','')}
+            </div>
+            """, unsafe_allow_html=True)
 
 
 # ── Primary response element ──────────────────────────────────────────────────
@@ -652,40 +652,9 @@ def _maybe_store_memory(case: dict, decision: dict) -> None:
 # ── Consistency violations ────────────────────────────────────────────────────
 
 def _render_consistency_violations(result: "consistency.ConsistencyResult", c: dict) -> None:
-    from core.consistency import Severity
-    errors   = [v for v in result.violations if v.severity == Severity.ERROR]
-    warnings = [v for v in result.violations if v.severity == Severity.WARNING]
-
-    if errors:
-        items_html = "".join(
-            f'<li style="margin-bottom:3px;">'
-            f'<span style="color:#EF4444;font-weight:600;">[{v.code}]</span> {v.message}</li>'
-            for v in errors
-        )
-        st.markdown(f"""
-        <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);
-            border-radius:6px;padding:0.6rem 0.9rem;margin-bottom:0.75rem;">
-            <div style="font-size:11px;font-weight:700;color:#EF4444;margin-bottom:4px;">
-                ⛔ Inconsistencias de datos detectadas
-            </div>
-            <ul style="margin:0;padding-left:1.2rem;font-size:11px;color:{c['text_secondary']};">
-                {items_html}
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-
-    if warnings:
-        items_html = "".join(
-            f'<li style="margin-bottom:3px;">'
-            f'<span style="color:#F59E0B;font-weight:600;">[{v.code}]</span> {v.message}</li>'
-            for v in warnings
-        )
-        with st.expander(f"⚠ {len(warnings)} advertencia(s) de consistencia", expanded=False):
-            st.markdown(f"""
-            <ul style="margin:0;padding-left:1.2rem;font-size:11px;color:{c['text_secondary']};">
-                {items_html}
-            </ul>
-            """, unsafe_allow_html=True)
+    html = consistency.render_violations_html(result, c)
+    if html:
+        st.markdown(html, unsafe_allow_html=True)
 
 
 # ── No decision ───────────────────────────────────────────────────────────────

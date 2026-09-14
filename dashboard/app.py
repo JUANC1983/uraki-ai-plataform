@@ -3,16 +3,33 @@
 URAKI OPS — Operational Decision Platform
 Run: streamlit run dashboard/app.py
 
-Production-grade. No demo mode. No simulated data.
+Functional prototype. No fallback demo data.
 Requires URAKI_API_URL environment variable.
 """
 import sys
 import os
+import textwrap
 
 # ── Path setup — must be first ──────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(__file__))
 
 import streamlit as st
+
+# Streamlit treats four-space-indented Markdown as a code block even when
+# unsafe HTML is enabled. Most dashboard components use readable indented
+# triple-quoted HTML, so normalize it once at the application boundary.
+if not getattr(st.markdown, "_uraki_dedents_html", False):
+    _streamlit_markdown = st.markdown
+
+    def _markdown(body, *args, **kwargs):
+        if kwargs.get("unsafe_allow_html") and isinstance(body, str):
+            body = "\n".join(
+                line.lstrip() for line in textwrap.dedent(body).splitlines()
+            ).strip()
+        return _streamlit_markdown(body, *args, **kwargs)
+
+    _markdown._uraki_dedents_html = True
+    st.markdown = _markdown
 
 # ── Page config — must be before any other st call ──────────────────────────
 st.set_page_config(
@@ -62,15 +79,10 @@ def main() -> None:
     sm.init()
 
     # 2. Inject global CSS design system
-st.markdown(get_css(), unsafe_allow_html=True)
+    st.markdown(get_css(), unsafe_allow_html=True)
 
-    # 3. Login gate — bypass in development, enforce in production
+    # 3. Login gate — a real backend identity is required in every environment.
     from core.auth import is_authenticated
-    from core.environment import is_development
-
-    if is_development() and not is_authenticated():
-        from core.auth import dev_login
-        dev_login()
 
     if not is_authenticated():
         from components.login import render as render_login
@@ -115,9 +127,6 @@ st.markdown(get_css(), unsafe_allow_html=True)
         elif view == "executive":
             from layouts.executive import render as render_executive
             render_executive()
-        elif view == "observability":
-            from layouts.observability import render as render_obs
-            render_obs()
         else:
             from layouts.flow_mode import render as render_flow
             render_flow()
@@ -158,7 +167,6 @@ def _render_system_strip() -> None:
         </div>
         """, unsafe_allow_html=True)
     else:
-        from services.api_client import API_BASE
         c = COLORS
         st.markdown(f"""
         <div style="
@@ -174,7 +182,7 @@ def _render_system_strip() -> None:
                 animation:pulse-beacon 2s ease-in-out infinite;
             "></span>
             <span style="font-size:10px;color:{c['text_muted']};">
-                Conectado · {API_BASE}</span>
+                Backend conectado</span>
         </div>
         <style>
         @keyframes pulse-beacon {{

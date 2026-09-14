@@ -31,7 +31,7 @@ async def run_periodically(
             logger.debug("Scheduler: running '%s'", name)
             await fn()
         except Exception as exc:
-            logger.error("Scheduler: job '%s' failed: %s", name, exc, exc_info=True)
+            logger.error("Scheduler: job '%s' failed (%s)", name, type(exc).__name__)
 
 
 # ---------------------------------------------------------------------------

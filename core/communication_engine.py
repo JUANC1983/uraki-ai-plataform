@@ -746,7 +746,7 @@ class CommunicationEngine:
         Post-generation validation: check that key facts appear in the output
         and that no unvalidated penalty or legal language was introduced.
 
-        Returns a list of warnings (not errors — the message is still usable).
+        Returns validation findings. String-only consumers suppress drafts with findings.
         """
         warnings: list[str] = []
         text_lower = generated_text.lower()

@@ -7,7 +7,8 @@ Contract:
   - Caller never sees raw requests exceptions — all wrapped
   - Auth token + Tenant ID injected on every request
   - GET responses cached in session_state with configurable TTL
-  - Retries: 3 attempts with 0s / 0.4s / 1.2s delays on 429/502/503/504
+  - Idempotent GET requests retry on transient failures.
+  - Mutation requests run once to avoid duplicate writes after ambiguous failures.
   - 401 raises AuthError so app.py can clear the session and show login
   - When URAKI_API_URL is not configured, every call returns a 503 error response.
     The system NEVER fabricates data — it blocks usage and shows a clear error.
@@ -210,6 +211,8 @@ class APIClient:
         return h
 
     def _url(self, path: str) -> str:
+        if path in {"/health", "/ready"}:
+            return f"{API_BASE}{path}"
         return f"{self._base}{path}"
 
     def _safe_request(
@@ -235,7 +238,11 @@ class APIClient:
         self, method: str, url: str,
         json=None, params=None, files=None, form_data=None,
     ) -> requests.Response:
-        retry_delays = self._RETRY_DELAYS[:_MAX_RETRIES]
+        retry_delays = (
+            self._RETRY_DELAYS[: max(1, _MAX_RETRIES)]
+            if method.upper() in {"GET", "HEAD"}
+            else [0]
+        )
         for attempt, delay in enumerate(retry_delays):
             if delay > 0:
                 time.sleep(delay)

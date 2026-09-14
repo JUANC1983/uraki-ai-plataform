@@ -1,0 +1,1 @@
+"""URAKI automated tests."""
